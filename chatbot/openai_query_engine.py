@@ -1,59 +1,37 @@
 """
-Chatbot query engine for natural language questions - Using Google Gemini with automatic model fallback
+OpenAI Query Engine for chatbot - Natural language questions using OpenAI
 """
 import json
-from typing import Dict, Any, Optional, List
-import google.genai as genai
+from typing import Dict, Any, Optional
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
 import os
 from datetime import datetime
 
-# List of all Gemini models to try in order (fastest/cheapest first)
-GEMINI_MODELS_FALLBACK = [
-    'gemini-flash-lite-latest',
-    'gemini-2.5-flash-lite',
-    'gemini-2.0-flash-lite',
-    'gemini-2.0-flash-lite-001',
-    'gemini-2.0-flash-lite-preview',
-    'gemini-flash-latest',
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-001',
-    'gemini-2.0-flash-exp',
-    'gemini-2.5-pro',
-    'gemini-3-flash-preview',
-    'gemini-3-pro-preview',
-    'gemini-pro-latest',
-]
 
-
-class QueryEngine:
-    """Process natural language queries about data quality using Google Gemini with automatic model fallback"""
+class OpenAIQueryEngine:
+    """Process natural language queries about data quality using OpenAI"""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-flash-lite-latest"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
         """
-        Initialize query engine with Google Gemini
+        Initialize query engine with OpenAI
         
         Args:
-            api_key: Google Gemini API key
-            model: Primary model to use (default: gemini-flash-lite-latest)
+            api_key: OpenAI API key
+            model: Model to use (default: gpt-4o-mini)
         """
-        self.api_key = api_key or os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
-        if not self.api_key:
-            raise ValueError("Google Gemini API key not provided. Set GOOGLE_API_KEY or GEMINI_API_KEY environment variable.")
+        if not OPENAI_AVAILABLE:
+            raise ImportError("OpenAI package not installed. Run: pip install openai")
         
-        self.client = genai.Client(api_key=self.api_key)
-        self.primary_model = model
-        self.current_model = model
-        self.failed_models = set()  # Track models that failed
-    
-    def _get_models_to_try(self) -> List[str]:
-        """Get list of models to try, starting with current model, then fallback list"""
-        models_to_try = [self.current_model] if self.current_model not in self.failed_models else []
-        # Add other models from fallback list, excluding failed ones
-        for model in GEMINI_MODELS_FALLBACK:
-            if model not in self.failed_models and model not in models_to_try:
-                models_to_try.append(model)
-        return models_to_try
+        self.api_key = api_key or os.getenv('OPENAI_API_KEY') or os.getenv('OPENAI_KEY')
+        if not self.api_key:
+            raise ValueError("OpenAI API key not provided. Set OPENAI_API_KEY environment variable.")
+        
+        self.client = OpenAI(api_key=self.api_key)
+        self.model = model
     
     def process_query(
         self,
@@ -110,7 +88,7 @@ class QueryEngine:
         dataset_name: Optional[str]
     ) -> str:
         """
-        Generate AI response using Gemini
+        Generate AI response using OpenAI
         
         Args:
             query: User's question
@@ -174,42 +152,18 @@ User Question: {query}
 
 Please provide a helpful answer based on the data quality information above."""
             
-            # Try models in order until one works
-            models_to_try = self._get_models_to_try()
-            last_error = None
+            # Call OpenAI API
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.2,
+                max_tokens=1000
+            )
             
-            for model in models_to_try:
-                try:
-                    print(f"🔄 QueryEngine: Trying Gemini model: {model}")
-                    response = self.client.models.generate_content(
-                        model=f'models/{model}',
-                        contents=f"{system_prompt}\n\n{user_prompt}"
-                    )
-                    
-                    # Success! Update current model
-                    if self.current_model != model:
-                        print(f"✅ QueryEngine: Switched to working model: {model}")
-                        self.current_model = model
-                    
-                    return response.text.strip()
-                    
-                except Exception as e:
-                    last_error = e
-                    error_str = str(e)
-                    # Check if it's a quota error or permanent error
-                    if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str or 'quota' in error_str.lower():
-                        print(f"⚠️ QueryEngine: Model {model} quota exhausted, trying next model...")
-                        self.failed_models.add(model)
-                    elif '404' in error_str or 'not found' in error_str.lower():
-                        print(f"⚠️ QueryEngine: Model {model} not found, trying next model...")
-                        self.failed_models.add(model)
-                    else:
-                        print(f"⚠️ QueryEngine: Model {model} error: {error_str[:100]}, trying next model...")
-                        continue
-            
-            # All models failed
-            print(f"❌ QueryEngine: All Gemini models failed. Tried: {models_to_try}")
-            return f"I apologize, but I encountered an error processing your question. All Gemini models failed. Last error: {str(last_error)[:200]}"
+            return response.choices[0].message.content.strip()
             
         except Exception as e:
             return f"I apologize, but I encountered an error processing your question: {str(e)}"

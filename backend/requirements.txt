@@ -16,7 +16,9 @@ numpy==1.26.3
 pyarrow==15.0.0
 
 # AI/ML
-openai==1.10.0
+google-genai>=1.58.0
+openai>=1.0.0
+anthropic>=0.76.0
 
 # Async & Caching
 redis==5.0.1
@@ -28,3 +30,4 @@ apache-airflow-client==2.8.0
 # Utilities
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+python-dateutil==2.8.2

@@ -9,7 +9,14 @@ from models.schemas import (
     ChatResponse,
     DAGTriggerRequest,
     DAGTriggerResponse,
-    HealthResponse
+    HealthResponse,
+    AgenticIssue,
+    AgenticIssueSummary,
+    ListAgentRunsResponse,
+    ListAgentIssuesResponse,
+    AgenticSummaryResponse,
+    ApplyFixesRequest,
+    ApplyFixesResponse
 )
 
 __all__ = [
@@ -28,5 +35,12 @@ __all__ = [
     "DAGTriggerRequest",
     "DAGTriggerResponse",
     "HealthResponse",
+    "AgenticIssue",
+    "AgenticIssueSummary",
+    "ListAgentRunsResponse",
+    "ListAgentIssuesResponse",
+    "AgenticSummaryResponse",
+    "ApplyFixesRequest",
+    "ApplyFixesResponse",
 ]
 
