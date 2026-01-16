@@ -39,7 +39,13 @@ class GeographicEnrichmentAgent(BaseAgent):
         llm_client=None
     ) -> List[AgenticIssue]:
         """
-        Detect missing country information and suggest based on city names
+        Detect missing/wrong state and country information based on city names
+        
+        CRITICAL LOGIC:
+        - NEVER modifies city columns (cities are the source of truth)
+        - If city exists → infer state from city (flag if state is missing or wrong)
+        - If state exists → infer country from state (flag if country is missing or wrong)
+        - Flow: City (given) → State (inferred) → Country (inferred)
         
         Args:
             dataset_rows: List of row dictionaries
@@ -47,7 +53,7 @@ class GeographicEnrichmentAgent(BaseAgent):
             llm_client: Optional LLM client
             
         Returns:
-            List of AgenticIssue objects
+            List of AgenticIssue objects (for state and country columns only, never city)
         """
         issues: List[AgenticIssue] = []
         llm = llm_client or self.llm_client

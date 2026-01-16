@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 import sys
 import os
+import hashlib
+import uuid
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.schemas import AgenticIssue
 
@@ -53,8 +55,14 @@ class BaseAgent(ABC):
         explanation: str,
         why_agentic: Optional[str] = None
     ) -> AgenticIssue:
-        """Helper to create an AgenticIssue"""
-        issue_id = f"{self.category}_{issue_type}_{row_id or 'dataset'}_{column}"
+        """Helper to create an AgenticIssue with a guaranteed unique ID"""
+        # Generate a short UUID for absolute uniqueness
+        # This ensures no collisions even if same issue is created multiple times
+        unique_id = str(uuid.uuid4())[:8]
+        
+        # Generate unique issue ID with UUID
+        issue_id = f"{self.category}_{issue_type}_{row_id or 'dataset'}_{column}_{unique_id}"
+        
         return AgenticIssue(
             id=issue_id,
             row_id=row_id,

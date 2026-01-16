@@ -111,6 +111,8 @@ Return ONLY a JSON object:
                 if ('job' in col_lower or 'start' in col_lower or 'hire' in col_lower) and 'birth' not in col_lower:
                     job_start_col = col
         
+        print(f"DEBUG: LogicAgent - Detected date columns: birth_date_col='{birth_date_col}', job_start_col='{job_start_col}'")
+        
         # Process each row
         for row_idx, row in enumerate(dataset_rows):
             # Specific check: Job start date must be after birth date
@@ -122,12 +124,24 @@ Return ONLY a JSON object:
                     birth_parsed = parse_date(str(birth_value))
                     job_parsed = parse_date(str(job_start_value))
                     
+                    print(f"DEBUG: LogicAgent - Row {row_idx}: birth_value='{birth_value}', job_start_value='{job_start_value}'")
+                    print(f"DEBUG: LogicAgent - Row {row_idx}: birth_parsed={birth_parsed}, job_parsed={job_parsed}")
+                    
                     if birth_parsed and job_parsed:
                         birth_date = birth_parsed[0]  # ISO string
                         job_date = job_parsed[0]
                         
-                        # If job start is before birth date, it's impossible - set to null
+                        print(f"DEBUG: LogicAgent - Row {row_idx}: Comparing job_date '{job_date}' < birth_date '{birth_date}' = {job_date < birth_date}")
+                        
+                        # CRITICAL: If job start date is BEFORE birth date, it's logically impossible
+                        # Example: Birth=1990-01-01, Job Start=1985-01-01 → Impossible!
+                        # Example: Birth=2010-01-01, Job Start=1998-01-01 → Impossible!
+                        # Fix: Set job start date to null
                         if job_date < birth_date:
+                            print(f"DEBUG: LogicAgent - ⚠️ TEMPORAL PARADOX DETECTED!")
+                            print(f"       Row {row_idx}: Birth Date = {birth_date}, Job Start = {job_date}")
+                            print(f"       → Job started BEFORE birth - Impossible! Setting to null.")
+                            
                             issues.append(self._create_issue(
                                 row_id=row_idx,
                                 column=job_start_col,
@@ -135,8 +149,8 @@ Return ONLY a JSON object:
                                 dirty_value=job_start_value,
                                 suggested_value=None,  # Set to null - impossible date
                                 confidence=0.95,
-                                explanation=f"Job start date ({job_date}) is before birth date ({birth_date}). This is impossible - should be null.",
-                                why_agentic="AI detects logical impossibilities: job cannot start before birth"
+                                explanation=f"⚠️ IMPOSSIBLE: Job start date ({job_date}) is BEFORE birth date ({birth_date}). Setting to null.",
+                                why_agentic="🤖 AI detects temporal impossibilities: person cannot start a job before being born. Job start date will be set to null."
                             ))
             
             # Temporal Paradox Detection for other date pairs

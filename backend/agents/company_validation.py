@@ -51,17 +51,63 @@ class CompanyValidationAgent(BaseAgent):
         company_columns = []
         for col, analysis in column_analysis.items():
             col_lower = col.lower()
-            # Check by name OR by data characteristics (high uniqueness, text type, not email/phone)
-            if (any(kw in col_lower for kw in ['company', 'organisation', 'organization', 'org', 'corp', 'firm']) or
-                (analysis.get('type') == 'text' and 
-                 analysis.get('unique_count', 0) > 10 and 
-                 analysis.get('unique_count', 0) < len(dataset_rows) * 0.8)):  # Not too unique, not too common
+            
+            # CRITICAL: Exclude non-company columns (measurements, locations, dates, contact info)
+            excluded_keywords = ['height', 'weight', 'length', 'width', 'distance', 'size', 
+                                'measurement', 'city', 'state', 'country', 'address', 'street',
+                                'email', 'phone', 'date', 'time', 'birth', 'age', 'id', 'number']
+            
+            if any(kw in col_lower for kw in excluded_keywords):
+                continue  # Skip this column - it's not a company column
+            
+            # Check by name only for company columns (be very strict)
+            if any(kw in col_lower for kw in ['company', 'organisation', 'organization', 'org', 'corp', 'firm', 'employer', 'business']):
                 company_columns.append(col)
+                print(f"DEBUG: CompanyValidationAgent - Detected company column: '{col}'")
         
         if not company_columns:
             return issues
         
-        # Collect all unique company names
+        # STEP 1: Find email column to infer company from corporate email domains
+        email_column = None
+        for col in dataset_rows[0].keys():
+            col_lower = col.lower()
+            if 'email' in col_lower or 'mail' in col_lower:
+                email_column = col
+                print(f"DEBUG: CompanyValidationAgent - Detected email column: '{email_column}'")
+                break
+        
+        # STEP 2: Build a mapping of email domains to company names (for corporate emails)
+        # Also track rows with generic emails (gmail, yahoo, etc.) to SKIP all validation
+        email_to_company = {}  # {row_idx: inferred_company_from_email}
+        rows_with_generic_email = set()  # Rows with gmail.com, yahoo.com, etc. - NO validation
+        
+        generic_domains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'icloud.com', 
+                          'mail.com', 'protonmail.com', 'aol.com', 'live.com', 'msn.com',
+                          'ymail.com', 'gmx.com', 'zoho.com', 'fastmail.com']
+        
+        if email_column:
+            for row_idx, row in enumerate(dataset_rows):
+                email_value = row.get(email_column)
+                if email_value and isinstance(email_value, str) and '@' in email_value:
+                    # Extract domain from email
+                    try:
+                        domain = email_value.split('@')[1].strip().lower()
+                        
+                        if domain in generic_domains:
+                            # Generic email - SKIP ALL validation for this row
+                            rows_with_generic_email.add(row_idx)
+                            print(f"DEBUG: CompanyValidationAgent - Row {row_idx}: Generic email domain '{domain}' - will SKIP company validation")
+                        elif llm:
+                            # Corporate email - infer company name
+                            inferred_company = self._infer_company_from_domain(domain, llm)
+                            if inferred_company:
+                                email_to_company[row_idx] = inferred_company
+                                print(f"DEBUG: CompanyValidationAgent - Row {row_idx}: Inferred company '{inferred_company}' from email domain '{domain}'")
+                    except Exception as e:
+                        pass  # Skip malformed emails
+        
+        # STEP 3: Collect all unique company names
         company_names = {}
         for row_idx, row in enumerate(dataset_rows):
             for col in company_columns:
@@ -99,8 +145,45 @@ class CompanyValidationAgent(BaseAgent):
         else:
             most_common_company = None
         
-        # Validate each unique company name
+        # STEP 4: Validate each row's company (including email-based validation)
+        rows_validated_by_email = set()
+        
+        # First pass: Validate companies based on email domains (SKIP generic emails)
+        for row_idx, row in enumerate(dataset_rows):
+            # CRITICAL: Skip rows with generic email domains (gmail.com, yahoo.com, etc.)
+            if row_idx in rows_with_generic_email:
+                continue  # Keep company as-is (even if null) for generic emails
+            
+            email_inferred_company = email_to_company.get(row_idx)
+            if email_inferred_company:
+                for col in company_columns:
+                    company_value = row.get(col)
+                    if company_value and isinstance(company_value, str) and company_value.strip():
+                        company = company_value.strip()
+                        # Compare with email-inferred company (case-insensitive, but also check for abbreviations)
+                        if company.lower() != email_inferred_company.lower():
+                            # Company name doesn't match email domain - flag as issue
+                            issues.append(self._create_issue(
+                                row_id=row_idx,
+                                column=col,
+                                issue_type="CompanyMismatch",
+                                dirty_value=company,
+                                suggested_value=email_inferred_company,
+                                confidence=0.95,
+                                explanation=f"Company '{company}' doesn't match corporate email domain. Email suggests '{email_inferred_company}'",
+                                why_agentic=f"🤖 AI-Powered: Infers company from corporate email domain (e.g., john@microsoft.com → Microsoft)"
+                            ))
+                            rows_validated_by_email.add(row_idx)
+        
+        # Second pass: Standard company validation (for rows not validated by email, excluding generic emails)
         for company, locations in company_names.items():
+            # Filter out locations for rows with generic emails
+            locations_to_validate = [(row_idx, col) for row_idx, col in locations 
+                                     if row_idx not in rows_with_generic_email]
+            
+            if not locations_to_validate:
+                continue  # All rows for this company have generic emails - skip
+            
             # Skip if this is the canonical one (the one we want to standardize to)
             if company == most_common_company and len(company_names) > 1:
                 continue
@@ -141,7 +224,12 @@ class CompanyValidationAgent(BaseAgent):
                 confidence = validation_result.get('confidence', 0.75) if validation_result else 0.7
                 explanation = validation_result.get('explanation', f'Standardize to most common company name: {suggested_value}') if validation_result else f'Multiple company name variations detected. Standardizing to most common: {suggested_value}'
                 
-                for row_idx, col in locations:
+                # Use locations_to_validate (already filtered to exclude generic emails)
+                for row_idx, col in locations_to_validate:
+                    # Skip if already validated by email
+                    if row_idx in rows_validated_by_email:
+                        continue
+                    
                     issues.append(self._create_issue(
                         row_id=row_idx,
                         column=col,
@@ -320,4 +408,78 @@ Return ONLY a JSON object:
             return None
         except Exception as e:
             print(f"Error finding canonical company name: {e}")
+            return None
+    
+    def _infer_company_from_domain(self, domain: str, llm) -> Optional[str]:
+        """
+        Infer company name from email domain using AI
+        
+        Examples:
+            microsoft.com → Microsoft
+            apple.com → Apple
+            netflix.com → Netflix
+            ibm.com → IBM
+        """
+        if not llm:
+            return None
+        
+        try:
+            prompt = f"""What is the full official company name for the email domain: {domain}?
+
+Examples:
+- microsoft.com → Microsoft
+- apple.com → Apple
+- netflix.com → Netflix
+- ibm.com → IBM
+- google.com → Google
+
+CRITICAL RULES:
+1. Return the FULL, OFFICIAL company name (not abbreviation)
+2. Use proper capitalization
+3. Return ONLY a JSON object with the company name
+4. If the domain is not a known company (e.g., personal domain), return null
+
+Return ONLY this JSON format:
+{{
+    "company_name": "Full Company Name" or null
+}}"""
+            
+            from agents.llm_helper import call_llm
+            content = call_llm(
+                llm,
+                messages=[
+                    {"role": "system", "content": "You are an expert at inferring company names from email domains. Return only valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=100
+            )
+            
+            if not content:
+                return None
+            
+            import json
+            import re
+            try:
+                # Remove markdown code blocks if present
+                content = re.sub(r'```json\s*', '', content)
+                content = re.sub(r'```\s*', '', content)
+                content = content.strip()
+                
+                # Look for JSON object
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+                if json_match:
+                    content = json_match.group(0)
+                
+                result = json.loads(content)
+                company_name = result.get('company_name')
+                if company_name and company_name.lower() != 'null':
+                    print(f"DEBUG: _infer_company_from_domain - domain '{domain}' → company '{company_name}'")
+                    return company_name
+            except Exception as e:
+                print(f"Error parsing company name from domain: {e}")
+            
+            return None
+        except Exception as e:
+            print(f"Error inferring company from domain: {e}")
             return None

@@ -74,29 +74,29 @@ class FormattingAgent(BaseAgent):
         
         # Process each row
         for row_idx, row in enumerate(dataset_rows):
-            # Date Chaos Detection
+            # Date Format Standardization - Convert ALL dates to YYYY-MM-DD
             for col in date_columns:
                 value = row.get(col)
                 if value and isinstance(value, str) and value.strip():
-                    # Check if it's not already in ISO format
-                    if not re.match(r'^\d{4}-\d{2}-\d{2}', str(value)):
-                        # Try to parse and normalize
+                    # Check if it's not already in ISO format (YYYY-MM-DD)
+                    if not re.match(r'^\d{4}-\d{2}-\d{2}$', str(value).strip()):
+                        # Try to parse and normalize to ISO format (YYYY-MM-DD)
                         parsed = parse_date(str(value))
                         if parsed:
                             iso_date, confidence = parsed
-                            if iso_date != str(value):
-                                issues.append(self._create_issue(
-                                    row_id=row_idx,
-                                    column=col,
-                                    issue_type="DateChaos",
-                                    dirty_value=value,
-                                    suggested_value=iso_date,
-                                    confidence=confidence,
-                                    explanation=f"Date format inconsistency detected: '{value}' can be standardized to ISO format",
-                                    why_agentic="Infers the correct date even with mixed regional formats (MM/DD/YYYY, DD-MM-YYYY, etc.)"
-                                ))
+                            # Always suggest ISO format if current format is different
+                            issues.append(self._create_issue(
+                                row_id=row_idx,
+                                column=col,
+                                issue_type="DateFormatting",
+                                dirty_value=value,
+                                suggested_value=iso_date,
+                                confidence=confidence,
+                                explanation=f"Date standardization: '{value}' → '{iso_date}' (YYYY-MM-DD format)",
+                                why_agentic="🤖 AI-Powered: Intelligently parses dates in any format (MM/DD/YYYY, DD-MM-YYYY, etc.) and standardizes to ISO YYYY-MM-DD format"
+                            ))
                         elif llm:
-                            # Use LLM for ambiguous dates
+                            # Use LLM for ambiguous/complex dates
                             try:
                                 llm_result = self._llm_normalize_date(str(value), llm)
                                 if llm_result:
@@ -104,12 +104,12 @@ class FormattingAgent(BaseAgent):
                                     issues.append(self._create_issue(
                                         row_id=row_idx,
                                         column=col,
-                                        issue_type="DateChaos",
+                                        issue_type="DateFormatting",
                                         dirty_value=value,
                                         suggested_value=suggested,
                                         confidence=confidence,
-                                        explanation=explanation,
-                                        why_agentic="LLM understands context and regional date format variations"
+                                        explanation=f"Date standardization: '{value}' → '{suggested}' (YYYY-MM-DD format)",
+                                        why_agentic="🤖 AI-Powered: LLM understands complex date formats and context to convert to ISO YYYY-MM-DD format"
                                     ))
                             except Exception as e:
                                 print(f"Error in LLM date normalization: {e}")
@@ -160,20 +160,47 @@ class FormattingAgent(BaseAgent):
                             print(f"DEBUG: FormattingAgent - ⚠️ Row {row_idx}: Country name '{country_name_str}' not in mapping, will try inference")
                     
                     # Step 2: If country is missing/null, infer from city/state (geographic data - SECOND PRIORITY)
-                    if (not country_to_use or country_to_use in ['', 'None', 'null']) and llm and (city_value or state_value):
-                        print(f"DEBUG: FormattingAgent - Country is null/missing for row {row_idx}. Inferring from city='{city_value}', state='{state_value}'")
-                        inferred_country = self._infer_country_from_location(city_value, state_value, llm)
-                        if inferred_country:
-                            print(f"DEBUG: FormattingAgent - ✅ Inferred country code '{inferred_country}' from location (geographic data - SECOND PRIORITY)")
-                            country_to_use = inferred_country
+                    # ONLY if phone number doesn't already have correct country code
+                    if (not country_to_use or country_to_use in ['', 'None', 'null']):
+                        # Check if phone already has a country code - if so, use that instead of inferring
+                        if value and isinstance(value, str) and value.strip().startswith('+'):
+                            # Phone has country code - try to detect it
+                            if value.strip().startswith('+91'):
+                                country_to_use = 'IN'
+                                print(f"DEBUG: FormattingAgent - Row {row_idx}: Detected country 'IN' from phone prefix '+91'")
+                            elif value.strip().startswith('+1'):
+                                country_to_use = 'US'
+                                print(f"DEBUG: FormattingAgent - Row {row_idx}: Detected country 'US' from phone prefix '+1'")
+                        
+                        # If still no country and we have city/state, infer it
+                        if (not country_to_use) and llm and (city_value or state_value):
+                            print(f"DEBUG: FormattingAgent - Country is null/missing for row {row_idx}. Inferring from city='{city_value}', state='{state_value}'")
+                            inferred_country = self._infer_country_from_location(city_value, state_value, llm)
+                            if inferred_country:
+                                print(f"DEBUG: FormattingAgent - ✅ Inferred country code '{inferred_country}' from location (geographic data - SECOND PRIORITY)")
+                                country_to_use = inferred_country
                     
-                    # Step 3: Fallback to detected phone country from data patterns (LOWEST PRIORITY - can be wrong!)
-                    if not country_to_use:
-                        country_to_use = phone_country
-                        print(f"DEBUG: FormattingAgent - ⚠️ Using detected phone country from data patterns: '{country_to_use}' (LOWEST PRIORITY - may be incorrect)")
+                        # Step 3: Fallback to detected phone country from data patterns (LOWEST PRIORITY - can be wrong!)
+                        if not country_to_use:
+                            country_to_use = phone_country
+                            print(f"DEBUG: FormattingAgent - ⚠️ Using detected phone country from data patterns: '{country_to_use}' (LOWEST PRIORITY - may be incorrect)")
                     
                     # Try deterministic normalization with detected country
                     # IMPORTANT: For Indian numbers, ensure we use +91 XXXXXXXXXX format (no brackets)
+                    # CRITICAL: Ensure country_to_use is set before calling normalize_phone
+                    if not country_to_use:
+                        print(f"DEBUG: FormattingAgent - ⚠️ Row {row_idx}: country_to_use is None/empty! This should not happen if country column has value.")
+                        # Try to get country from context as last resort
+                        country_name = context.get('country')
+                        if country_name:
+                            country_name_lower = str(country_name).lower().strip()
+                            if 'india' in country_name_lower or country_name_lower == 'in':
+                                country_to_use = 'IN'
+                                print(f"DEBUG: FormattingAgent - ✅ Row {row_idx}: Emergency fallback - set country_to_use='IN' from context")
+                            elif 'united states' in country_name_lower or country_name_lower in ['us', 'usa']:
+                                country_to_use = 'US'
+                                print(f"DEBUG: FormattingAgent - ✅ Row {row_idx}: Emergency fallback - set country_to_use='US' from context")
+                    
                     print(f"DEBUG: FormattingAgent - Row {row_idx}: Calling normalize_phone with country_code='{country_to_use}', phone='{value}'")
                     normalized = normalize_phone(str(value), country_code=country_to_use, context=context)
                     print(f"DEBUG: FormattingAgent - Row {row_idx}: normalize_phone returned: {normalized}")
@@ -301,33 +328,40 @@ Return ONLY a JSON object with:
             return None
     
     def _infer_country_from_location(self, city: Optional[str], state: Optional[str], llm) -> Optional[str]:
-        """Use LLM to infer country code from city/state when country is missing"""
+        """Use LLM to infer country code from city/state when country is missing
+        
+        CRITICAL: Prioritize city over state, as state might be incorrect.
+        If city is provided, ONLY use city for inference (ignore state).
+        """
         if not city and not state:
             return None
         
         try:
-            location_info = []
+            # CRITICAL: Use city ONLY if available (state might be wrong)
+            # State is only used as fallback if no city is provided
             if city:
-                location_info.append(f"City: {city}")
-            if state:
-                location_info.append(f"State: {state}")
-            
-            location_str = ", ".join(location_info)
+                location_str = f"City: {city}"
+            else:
+                location_str = f"State: {state}"
             
             prompt = f"""Based on this location information: {location_str}
 
 Determine the country code for phone number formatting. Return 2-letter country code.
 
 CRITICAL RULES:
-- For Indian cities/states (Mumbai, Delhi, Maharashtra, etc.), return "IN"
-- For US cities/states (New York, California, etc.), return "US"
-- For UK cities (London, etc.), return "GB"
+- For Indian cities (Mumbai, Delhi, Pune, Goa, Nagpur, etc.), return "IN"
+- For US cities (New York, Los Angeles, Portland, etc.), return "US"
+- For UK cities (London, Manchester, etc.), return "GB"
 - Return ONLY the 2-letter country code, nothing else.
+- DO NOT consider any state information - base answer ONLY on the city name provided.
 
 Examples:
-- City: Mumbai, State: Maharashtra → IN
+- City: Mumbai → IN
 - City: Pune → IN
+- City: Goa → IN
+- City: Nagpur → IN
 - City: New York → US
+- City: Portland → US (if Oregon context), or could be US
 - City: London → GB
 
 Country code:"""
