@@ -4,6 +4,7 @@ Validation Service - Triggered by UI Configuration
 import sys
 from pathlib import Path
 from typing import Dict, Any
+import os as os_global
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -37,10 +38,16 @@ def run_validation(config: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"Source type {source_type} not yet implemented")
     
     # Load data from S3 (optionally with row limit to keep validation fast)
-    connector = S3Connector(connection_details)
-    connector.connect()
-    
-    if not connector.test_connection():
+    try:
+        connector = S3Connector(connection_details)
+        connector.connect()
+        
+        if not connector.test_connection():
+            # Create simple error without any formatting that might use os
+            err_msg = "Failed to connect to S3"
+            raise Exception(err_msg)
+    except Exception as orig_error:
+        # Re-raise with a simple message to avoid any string formatting issues
         raise Exception("Failed to connect to S3")
     
     # Allow max_rows in config to limit how many rows we read (for very large files)
@@ -199,7 +206,7 @@ def run_validation(config: Dict[str, Any]) -> Dict[str, Any]:
         from agents.orchestrator import AgentsOrchestrator
         from agents.llm_provider import LLMProviderFactory, LLMProvider
         from config import settings
-        import os
+        # os is already imported at module level - don't import again
         
         # Initialize orchestrator with LLM client if available
         llm_client = None
@@ -219,17 +226,17 @@ def run_validation(config: Dict[str, Any]) -> Dict[str, Any]:
                 load_dotenv(backend_env, override=False)
             
             # Load Gemini API key from environment (from .env file or system env)
-            gemini_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
+            gemini_key = os_global.getenv('GEMINI_API_KEY') or os_global.getenv('GOOGLE_API_KEY')
             if gemini_key:
-                os.environ['GOOGLE_API_KEY'] = gemini_key
-                os.environ['GEMINI_API_KEY'] = gemini_key
+                os_global.environ['GOOGLE_API_KEY'] = gemini_key
+                os_global.environ['GEMINI_API_KEY'] = gemini_key
                 print(f"✅ ValidationService: Gemini API key loaded from environment")
             else:
                 print("⚠️ ValidationService: Warning - GEMINI_API_KEY or GOOGLE_API_KEY not found")
             
             # Set LLM provider (can be overridden by LLM_PROVIDER env var)
-            llm_provider = os.getenv('LLM_PROVIDER', 'gemini').lower()
-            os.environ['LLM_PROVIDER'] = llm_provider
+            llm_provider = os_global.getenv('LLM_PROVIDER', 'gemini').lower()
+            os_global.environ['LLM_PROVIDER'] = llm_provider
             print(f"✅ ValidationService: LLM Provider set to: {llm_provider}")
             
             # Create LLM client using factory

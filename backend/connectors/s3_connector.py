@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any
 from backend.connectors.base import BaseConnector
 import boto3
 from io import StringIO, BytesIO
-import os
+import os as os_module
 
 
 class S3Connector(BaseConnector):
@@ -28,9 +28,10 @@ class S3Connector(BaseConnector):
             raise ValueError("bucket and key are required in config")
         
         # AWS credentials (use from config or environment)
-        self.aws_access_key = config.get('aws_access_key_id') or os.getenv('AWS_ACCESS_KEY_ID')
-        self.aws_secret_key = config.get('aws_secret_access_key') or os.getenv('AWS_SECRET_ACCESS_KEY')
-        self.region = config.get('region') or os.getenv('AWS_DEFAULT_REGION', 'us-east-1')
+        # Use os_module to avoid any potential variable shadowing issues
+        self.aws_access_key = config.get('aws_access_key_id') or os_module.getenv('AWS_ACCESS_KEY_ID')
+        self.aws_secret_key = config.get('aws_secret_access_key') or os_module.getenv('AWS_SECRET_ACCESS_KEY')
+        self.region = config.get('region') or os_module.getenv('AWS_DEFAULT_REGION', 'us-east-1')
         
         self.s3_client = None
     
@@ -46,11 +47,15 @@ class S3Connector(BaseConnector):
                 )
             else:
                 # Use default credentials (IAM role, etc.)
+                print(f"DEBUG: Using default AWS credentials (IAM role or env vars). Region: {self.region}")
                 self.s3_client = boto3.client('s3', region_name=self.region)
             
             return True
         except Exception as e:
-            raise Exception(f"Failed to connect to S3: {e}")
+            error_msg = f"Failed to connect to S3: {str(e)}"
+            if "NoCredentialsError" in str(type(e).__name__):
+                error_msg += ". Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in environment variables or .env file"
+            raise Exception(error_msg)
     
     def test_connection(self) -> bool:
         """Test if S3 object exists and is accessible"""
@@ -58,11 +63,26 @@ class S3Connector(BaseConnector):
             if not self.s3_client:
                 self.connect()
             
+            print(f"DEBUG: Testing S3 connection - Bucket: {self.bucket}, Key: {self.key}")
             # Try to get object metadata
             self.s3_client.head_object(Bucket=self.bucket, Key=self.key)
+            print(f"DEBUG: S3 connection test successful")
             return True
         except Exception as e:
-            print(f"S3 connection test failed: {e}")
+            error_type = type(e).__name__
+            error_msg = str(e)
+            print(f"ERROR: S3 connection test failed - Type: {error_type}, Message: {error_msg}")
+            
+            # Provide more specific error messages
+            if "NoSuchBucket" in error_msg or "404" in error_msg:
+                print(f"ERROR: Bucket '{self.bucket}' does not exist")
+            elif "NoSuchKey" in error_msg or "404" in error_msg:
+                print(f"ERROR: Key '{self.key}' does not exist in bucket '{self.bucket}'")
+            elif "AccessDenied" in error_msg or "403" in error_msg:
+                print(f"ERROR: Access denied to bucket '{self.bucket}' or key '{self.key}'. Check AWS permissions.")
+            elif "NoCredentialsError" in error_type:
+                print(f"ERROR: AWS credentials not found. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
+            
             return False
     
     def read_data(self, limit: Optional[int] = None) -> pd.DataFrame:

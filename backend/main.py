@@ -1316,12 +1316,24 @@ async def list_s3_files(bucket: str, prefix: str = ""):
         import boto3
         from botocore.exceptions import ClientError, NoCredentialsError
         
+        # Trim whitespace from bucket and prefix to prevent validation errors
+        bucket = bucket.strip() if bucket else ""
+        prefix = prefix.strip() if prefix else ""
+        
+        # Validate bucket name
+        if not bucket:
+            raise HTTPException(
+                status_code=400,
+                detail="Bucket name cannot be empty"
+            )
+        
         # Get AWS credentials from environment (check both AWS_REGION and AWS_DEFAULT_REGION)
         aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
         aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
         aws_region = os.getenv('AWS_REGION') or os.getenv('AWS_DEFAULT_REGION') or 'us-east-1'
         
         print(f"DEBUG: S3 credentials check - Access Key: {'Set' if aws_access_key else 'Missing'}, Secret Key: {'Set' if aws_secret_key else 'Missing'}, Region: {aws_region}")
+        print(f"DEBUG: S3 request - Bucket: '{bucket}' (length: {len(bucket)}), Prefix: '{prefix}'")
         
         # Check if credentials are available
         if not aws_access_key or not aws_secret_key:
@@ -1372,22 +1384,40 @@ async def list_s3_files(bucket: str, prefix: str = ""):
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            raise HTTPException(
-                status_code=500,
-                detail=f"AWS S3 error ({error_code}): {error_message}"
-            )
+            print(f"DEBUG: S3 ClientError - Code: {error_code}, Message: {error_message}")
+            
+            # Handle specific error codes more gracefully
+            if error_code == 'NoSuchBucket':
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Bucket '{bucket}' does not exist. Please check the bucket name."
+                )
+            elif error_code == 'AccessDenied':
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Access denied to bucket '{bucket}'. Please check your AWS credentials and permissions."
+                )
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"AWS S3 error ({error_code}): {error_message}"
+                )
         except NoCredentialsError:
             raise HTTPException(
                 status_code=401,
-                detail="AWS credentials not found. Please configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+                detail="AWS credentials not found. Please configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in your .env file"
             )
     except HTTPException:
         raise
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Error listing S3 files: {error_details}")
-        raise HTTPException(status_code=500, detail=f"Failed to list S3 files: {str(e)}")
+        print(f"ERROR: Exception in list_s3_files: {error_details}")
+        print(f"ERROR: Exception type: {type(e).__name__}, Message: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error listing S3 files: {str(e)}. Check backend logs for details."
+        )
 
 
 # ==================== Validation Trigger Endpoint ====================
@@ -1428,10 +1458,13 @@ async def trigger_validation(config: dict):
             "source_id": f"{config['connection_details']['bucket']}/{config['connection_details']['key'].replace('.csv', '').replace('.parquet', '')}"
         }
     except Exception as e:
-        print(f"ERROR: /api/validate failed: {str(e)}")
+        # Get error message without using f-strings to avoid any scoping issues
+        error_str = str(e)
+        print("ERROR: /api/validate failed: " + error_str)
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
+        # Use string concatenation instead of f-string to avoid any os scoping issues
+        raise HTTPException(status_code=500, detail="Validation failed: " + error_str)
 
 
 # ==================== Dataset Configuration Endpoints ====================
