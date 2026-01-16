@@ -106,7 +106,26 @@ class UnitsAgent(BaseAgent):
                                     explanation=f"Unit mismatch: '{value}' uses {unit}. Standardizing to {canonical_unit} (most common unit in this column: {canonical_unit})",
                                     why_agentic=f"🤖 AI-Powered: Analyzes all values in column to find most common unit ({canonical_unit}), then standardizes all values to that unit for consistency"
                                 ))
-                    elif value and isinstance(value, str) and value.strip() and not value.replace('.', '').replace('-', '').isdigit():
+                        else:
+                            # Value already in canonical unit, but may need reformatting for consistency
+                            suggested = f"{numeric_value:.2f} {canonical_unit}"
+                            if str(value).strip() != suggested.strip():
+                                issues.append(self._create_issue(
+                                    row_id=row_idx,
+                                    column=col,
+                                    issue_type="ScaleMismatch",
+                                    dirty_value=value,
+                                    suggested_value=suggested,
+                                    confidence=0.95,
+                                    explanation=f"Format standardization: '{value}' → '{suggested}' (consistent {canonical_unit} format)",
+                                    why_agentic=f"🤖 AI-Powered: Ensures all values in column use consistent format for {canonical_unit}"
+                                ))
+                    else:
+                        # Couldn't parse - log for debugging
+                        print(f"DEBUG: UnitsAgent - Row {row_idx}, Column '{col}': Could not parse value '{value}'")
+                    
+                    # Check if it's unparseable but might need LLM
+                    if not parsed and value and isinstance(value, str) and value.strip() and not value.replace('.', '').replace('-', '').isdigit():
                         # If it looks like a measurement but couldn't parse, still flag it
                         # (might be a complex format that needs LLM)
                         if llm:

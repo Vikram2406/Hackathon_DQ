@@ -284,383 +284,335 @@ if selected_dataset:
 
         st.markdown("---")
 
-        # Issue Matrix
-        st.markdown("### 📋 Issue Matrix")
-        matrix = summary.get("matrix", [])
+        # Show all issues directly - no matrix needed
+        if agentic_issues:
+            # Get all unique issue types for display
+            all_issue_types = list(set([issue["issue_type"] for issue in agentic_issues]))
+            
+            # Show all issues by default
+            selected_issue_types = all_issue_types
+            
+            # Use detailed issues from newest validation run (no stored history)
+            issues = agentic_issues
 
-        if matrix:
-            # Create DataFrame for matrix
-            matrix_data = []
-            for item in matrix:
-                matrix_data.append(
-                    {
-                        "Category": item["category"],
-                        "Issue Type": item["issue_type"],
-                        "Dirty Example": item.get("dirty_example", "N/A"),
-                        "Agent's Smart Fix": item.get("smart_fix_example", "N/A"),
-                        "Why it's Agentic": item.get("why_agentic", "N/A"),
-                        "Count": item["count"],
-                    }
-                )
+            # Filter by selected issue types and confidence
+            filtered_issues = []
+            for issue in issues:
+                if issue["issue_type"] in selected_issue_types:
+                    if issue["confidence"] >= filter_confidence:
+                        filtered_issues.append(issue)
 
-            matrix_df = pd.DataFrame(matrix_data)
-
-            # Apply category filter
-            if filter_category != "All":
-                matrix_df = matrix_df[matrix_df["Category"] == filter_category]
-
-            # Display matrix
-            st.dataframe(
-                matrix_df,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            # Drill-down: Select issue type
-            st.markdown("---")
-            st.markdown("### 🔍 Issue Details")
-
-            if len(matrix_df) > 0:
-                # Auto-select ALL issue types by default to show all issues
-                all_issue_types = matrix_df["Issue Type"].unique().tolist()
-                selected_issue_types = st.multiselect(
-                    "Select Issue Types to View Details:",
-                    options=all_issue_types,
-                    default=all_issue_types,  # Auto-select ALL by default
-                    key="selected_issue_types",
-                )
-
-                if selected_issue_types:
-                    # Use detailed issues from newest validation run (no stored history)
-                    issues = agentic_issues
-
-                    # Filter by selected issue types and confidence
-                    filtered_issues = []
-                    for issue in issues:
-                        if issue["issue_type"] in selected_issue_types:
-                            if issue["confidence"] >= filter_confidence:
-                                filtered_issues.append(issue)
-
-                    if filtered_issues:
-                        # Unit preferences section (for ScaleMismatch issues) - show BEFORE issue table
-                        unit_issue_columns = set()
-                        for issue in filtered_issues:
-                            if issue.get('issue_type') == 'ScaleMismatch':
-                                unit_issue_columns.add(issue.get('column'))
+            if filtered_issues:
+                # Unit preferences section (for ScaleMismatch issues) - show BEFORE issue table
+                unit_issue_columns = set()
+                for issue in filtered_issues:
+                    if issue.get('issue_type') == 'ScaleMismatch':
+                        unit_issue_columns.add(issue.get('column'))
+            
+                unit_preferences = {}
+                if unit_issue_columns:
+                    st.markdown("### ⚙️ Unit Preferences")
+                    st.info("Select your preferred unit for each column. All values will be standardized to this unit. The table below will update automatically.")
+                
+                    for col in sorted(unit_issue_columns):
+                        col_lower = col.lower()
+                        # Determine default unit based on column name
+                        if 'weight' in col_lower:
+                            default_unit = 'kg'
+                            options = ['kg', 'g', 'lb', 'oz']
+                        elif 'height' in col_lower or 'length' in col_lower or 'distance' in col_lower:
+                            default_unit = 'cm'
+                            options = ['cm', 'm', 'in', 'ft']
+                        else:
+                            default_unit = 'cm'
+                            options = ['cm', 'm', 'in', 'ft', 'kg', 'g']
                     
-                        unit_preferences = {}
-                        if unit_issue_columns:
-                            st.markdown("### ⚙️ Unit Preferences")
-                            st.info("Select your preferred unit for each column. All values will be standardized to this unit. The table below will update automatically.")
-                        
-                            for col in sorted(unit_issue_columns):
-                                col_lower = col.lower()
-                                # Determine default unit based on column name
-                                if 'weight' in col_lower:
-                                    default_unit = 'kg'
-                                    options = ['kg', 'g', 'lb', 'oz']
-                                elif 'height' in col_lower or 'length' in col_lower or 'distance' in col_lower:
-                                    default_unit = 'cm'
-                                    options = ['cm', 'm', 'in', 'ft']
-                                else:
-                                    default_unit = 'cm'
-                                    options = ['cm', 'm', 'in', 'ft', 'kg', 'g']
-                            
-                                # Get or set preference
-                                pref_key = f"unit_pref_{col}"
-                                if pref_key not in st.session_state:
-                                    st.session_state[pref_key] = default_unit
-                            
-                                selected_unit = st.selectbox(
-                                    f"Unit for '{col}':",
-                                    options=options,
-                                    index=options.index(st.session_state[pref_key]) if st.session_state[pref_key] in options else 0,
-                                    key=pref_key
-                                )
-                                unit_preferences[col] = selected_unit
-                        
-                            st.session_state.unit_preferences = unit_preferences
+                        # Get or set preference
+                        pref_key = f"unit_pref_{col}"
+                        if pref_key not in st.session_state:
+                            st.session_state[pref_key] = default_unit
                     
-                        # Initialize selected issues in session state
-                        if 'selected_issue_ids' not in st.session_state:
-                            st.session_state.selected_issue_ids = set()
+                        selected_unit = st.selectbox(
+                            f"Unit for '{col}':",
+                            options=options,
+                            index=options.index(st.session_state[pref_key]) if st.session_state[pref_key] in options else 0,
+                            key=pref_key
+                        )
+                        unit_preferences[col] = selected_unit
+                
+                    st.session_state.unit_preferences = unit_preferences
+            
+                # Initialize selected issues in session state
+                if 'selected_issue_ids' not in st.session_state:
+                    st.session_state.selected_issue_ids = set()
+                
+                # Get ALL issue IDs from filtered issues
+                all_issue_ids = [i.get('id') for i in filtered_issues if i.get('id')]
+                
+                # Create DataFrame for table display with select column
+                st.markdown("### 📋 Issue Details (Select issues to fix)")
+                
+                # "Select All" checkbox and count
+                col_select_all, col_count = st.columns([3, 1])
+                with col_select_all:
+                    currently_selected = st.session_state.selected_issue_ids
+                    all_visible_selected = len(all_issue_ids) > 0 and all(issue_id in currently_selected for issue_id in all_issue_ids if issue_id)
+                    
+                    select_all = st.checkbox(
+                        f"Select All ({len(all_issue_ids)} issues)",
+                        value=all_visible_selected,
+                        key="select_all_issues"
+                    )
+                    
+                    if select_all != all_visible_selected:
+                        if select_all:
+                            st.session_state.selected_issue_ids.update(all_issue_ids)
+                        else:
+                            for issue_id in all_issue_ids:
+                                st.session_state.selected_issue_ids.discard(issue_id)
+                        st.rerun()
+                
+                with col_count:
+                    st.metric("Selected", len(st.session_state.selected_issue_ids))
+                
+                # Build table data
+                table_data = []
+                issue_id_map = {}  # Map index to issue_id
                         
-                        # Initialize selection version counter (increments when Select All is toggled)
-                        if 'selection_version' not in st.session_state:
-                            st.session_state.selection_version = 0
+                for idx, issue in enumerate(filtered_issues):
+                    issue_id = issue.get('id')
+                    issue_id_map[idx] = issue_id
+                    suggested_value = str(issue['suggested_value'])
+                    
+                    # If this is a unit issue and we have a preference, recalculate
+                    if issue.get('issue_type') == 'ScaleMismatch' and issue.get('column') in unit_preferences:
+                        preferred_unit = unit_preferences[issue.get('column')]
+                        dirty_value = str(issue.get('dirty_value', ''))
                         
-                        # Get ALL issue IDs from filtered issues (these are the ones currently visible)
-                        all_issue_ids = [i.get('id') for i in filtered_issues if i.get('id')]
-                        
-                        # "Select All" checkbox
-                        st.markdown("### 📋 Issue Details (Select issues to fix)")
-                        col_select_all, col_count = st.columns([3, 1])
-                        with col_select_all:
-                            # Check current state - are all visible issues selected?
-                            currently_selected = st.session_state.selected_issue_ids
-                            all_visible_selected = len(all_issue_ids) > 0 and all(issue_id in currently_selected for issue_id in all_issue_ids if issue_id)
-                            
-                            select_all = st.checkbox(
-                                f"Select All ({len(all_issue_ids)} issues)",
-                                value=all_visible_selected,
-                                key="select_all_issues"
+                        try:
+                            import re
+                            match = re.search(r'([\d.]+)\s*(\w+)', dirty_value)
+                            if match:
+                                numeric_val = float(match.group(1))
+                                current_unit = match.group(2).lower()
+                                
+                                unit_map = {
+                                    'cm': 'cm', 'm': 'm', 'in': 'in', 'ft': 'ft',
+                                    'kg': 'kg', 'g': 'g', 'lb': 'lb', 'oz': 'oz'
+                                }
+                                current_unit_normalized = unit_map.get(current_unit, current_unit)
+                                
+                                if current_unit_normalized != preferred_unit:
+                                    converted = convert_units_frontend(numeric_val, current_unit_normalized, preferred_unit)
+                                    if converted is not None:
+                                        suggested_value = f"{converted:.2f} {preferred_unit}"
+                        except:
+                            pass
+                    
+                    is_selected = issue_id in st.session_state.selected_issue_ids
+                    
+                    table_data.append({
+                        "✓": is_selected,
+                        "Row": issue.get('row_id', 'N/A'),
+                        "Column": issue['column'],
+                        "Issue Type": issue['issue_type'],
+                        "Current Value": str(issue['dirty_value'])[:40],
+                        "Suggested Fix": suggested_value[:40],
+                        "Confidence": round(issue['confidence'], 2),
+                        "Explanation": issue.get('explanation', '')[:80]
+                    })
+                
+                # Display table with selection column
+                if table_data:
+                    issues_df = pd.DataFrame(table_data)
+                    
+                    # Use data_editor with checkbox column
+                    edited_df = st.data_editor(
+                        issues_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        disabled=["Row", "Column", "Issue Type", "Current Value", "Suggested Fix", "Confidence", "Explanation"],
+                        column_config={
+                            "✓": st.column_config.CheckboxColumn(
+                                "✓",
+                                help="Select to fix",
+                                default=False,
                             )
-                            
-                            # Handle selection/deselection based on checkbox state change
-                            if select_all != all_visible_selected:
-                                if select_all:
-                                    # User checked "Select All" - add all visible issues
-                                    st.session_state.selected_issue_ids.update(all_issue_ids)
-                                else:
-                                    # User unchecked "Select All" - remove all visible issues
-                                    for issue_id in all_issue_ids:
-                                        st.session_state.selected_issue_ids.discard(issue_id)
-                                # Increment version to force checkbox recreation
-                                st.session_state.selection_version += 1
-                                # Force a rerun so individual checkboxes reflect the new state
-                                st.rerun()
-                        
-                        with col_count:
-                            st.metric("Selected", len(st.session_state.selected_issue_ids))
-                        
-                        # Create DataFrame for display with checkboxes - recalculate suggested values based on unit preferences
-                        issues_df_data = []
-                        for idx, issue in enumerate(filtered_issues):
-                            issue_id = issue.get('id')
-                            suggested_value = str(issue['suggested_value'])[:50]
-                        
-                            # If this is a unit issue and we have a preference, recalculate
-                            if issue.get('issue_type') == 'ScaleMismatch' and issue.get('column') in unit_preferences:
-                                preferred_unit = unit_preferences[issue.get('column')]
-                                dirty_value = str(issue.get('dirty_value', ''))
-                            
-                                # Try to parse and convert to preferred unit
-                                try:
-                                    import re
-                                    # Extract number and unit from dirty value
-                                    # Handle formats like "5ft 10in", "178cm", "1.78 meters"
-                                    match = re.search(r'([\d.]+)\s*(\w+)', dirty_value)
-                                    if match:
-                                        numeric_val = float(match.group(1))
-                                        current_unit = match.group(2).lower()
-                                    
-                                        # Map common unit abbreviations to standard names
-                                        unit_map = {
-                                            'cm': 'cm', 'centimeter': 'cm', 'centimeters': 'cm',
-                                            'm': 'm', 'meter': 'm', 'meters': 'm', 'metre': 'm', 'metres': 'm',
-                                            'in': 'in', 'inch': 'in', 'inches': 'in', '"': 'in',
-                                            'ft': 'ft', 'feet': 'ft', 'foot': 'ft', "'": 'ft',
-                                            'kg': 'kg', 'kilogram': 'kg', 'kilograms': 'kg',
-                                            'g': 'g', 'gram': 'g', 'grams': 'g',
-                                            'lb': 'lb', 'pound': 'lb', 'pounds': 'lb', 'lbs': 'lb',
-                                            'oz': 'oz', 'ounce': 'oz', 'ounces': 'oz'
-                                        }
-                                    
-                                        current_unit_normalized = unit_map.get(current_unit, current_unit)
-                                    
-                                        # Convert if units are different
-                                        if current_unit_normalized != preferred_unit:
-                                            converted = convert_units_frontend(numeric_val, current_unit_normalized, preferred_unit)
-                                            if converted is not None:
-                                                suggested_value = f"{converted:.2f} {preferred_unit}"
-                                except Exception as e:
-                                    pass  # Keep original suggested value if conversion fails
-                            
-                            # Create checkbox for each issue
-                            checkbox_col, info_col = st.columns([0.3, 9.7])
-                            with checkbox_col:
-                                # Check if this issue should be selected (either individually or via Select All)
-                                should_be_selected = issue_id in st.session_state.selected_issue_ids
-                                
-                                # Include selection_version in key to force recreation when Select All is toggled
-                                checkbox_key = f"issue_checkbox_{issue_id}_{st.session_state.selection_version}"
-                                
-                                is_selected = st.checkbox(
-                                    "",
-                                    value=should_be_selected,
-                                    key=checkbox_key,
-                                    label_visibility="collapsed"
-                                )
-                                
-                                # Update session state based on checkbox state
-                                if is_selected and issue_id and issue_id not in st.session_state.selected_issue_ids:
-                                    st.session_state.selected_issue_ids.add(issue_id)
-                                    # Rerun to update Select All checkbox state (but don't increment version)
-                                    st.rerun()
-                                elif not is_selected and issue_id and issue_id in st.session_state.selected_issue_ids:
-                                    st.session_state.selected_issue_ids.discard(issue_id)
-                                    # Rerun to update Select All checkbox state (but don't increment version)
-                                    st.rerun()
-                            
-                            with info_col:
-                                # Display issue details in a compact format
-                                issue_text = f"**Row {issue.get('row_id', 'N/A')}** | Column: `{issue['column']}` | {issue['dirty_value']} → **{suggested_value}** | Confidence: {issue['confidence']:.2f}"
-                                if issue.get('explanation'):
-                                    issue_text += f" | _{issue['explanation'][:80]}_"
-                                st.markdown(issue_text)
-                        
-                        st.markdown("---")
+                        },
+                        key="issues_table"
+                    )
                     
-                        # Action buttons: preview and apply fixes
-                        st.markdown("### 🔧 Apply Fixes")
-                        col1, col2, col3 = st.columns(3)
+                    # Update selected issues based on edited dataframe
+                    new_selected = set()
+                    for idx, row in edited_df.iterrows():
+                        if row["✓"] == True:
+                            if idx in issue_id_map:
+                                new_selected.add(issue_id_map[idx])
                     
-                        with col1:
-                            if st.button("👁️ Preview Cleaned CSV", key="preview_fixes_btn"):
-                                try:
-                                    # Only use selected issues
-                                    selected_ids = list(st.session_state.selected_issue_ids)
-                                    if not selected_ids:
-                                        st.warning("⚠️ Please select at least one issue to fix by checking the checkboxes above.")
-                                    else:
-                                        # Filter to only selected issues
-                                        selected_issues = [i for i in filtered_issues if i.get('id') in selected_ids]
-                                        with st.spinner(f"Generating preview for {len(selected_ids)} selected issues..."):
-                                            payload = {
-                                                "issue_ids": selected_ids,
-                                                "mode": "preview",
-                                                # Provide issues + source directly (no stored validation JSON required)
-                                                "issues": selected_issues,
-                                                "source_bucket": st.session_state.get("agentic_latest_source_bucket"),
-                                                "source_key": st.session_state.get("agentic_latest_source_key"),
-                                                "unit_preferences": st.session_state.get("unit_preferences", {}),
-                                            }
-                                            apply_resp = requests.post(
-                                                f"{BACKEND_URL}/api/agents/apply",
-                                                json=payload,
-                                                timeout=60,
-                                            )
-                                            if apply_resp.status_code == 200:
-                                                apply_data = apply_resp.json()
-                                                preview_data = apply_data.get("preview_data", {})
-                                                csv_base64 = preview_data.get("csv_base64")
-                                                filename = preview_data.get("filename", "cleaned.csv")
-                                                applied_count = preview_data.get("applied_count", 0)
-                                            
-                                                if csv_base64:
-                                                    st.success(f"✅ Preview ready: {applied_count} fixes applied by AI")
-                                                    st.session_state.cleaned_csv_base64 = csv_base64
-                                                    st.session_state.cleaned_csv_filename = filename
-                                                    st.session_state.applied_details = preview_data.get("applied_details", [])
-                                                    st.session_state.changed_cells = preview_data.get("changed_cells", {}) or {}
-                                                    st.session_state.csv_original_base64 = preview_data.get("csv_original_base64")
-                                                    st.rerun()  # Rerun to show preview
-                                                else:
-                                                    st.error("Preview data not available. Check backend logs for errors.")
-                                            else:
-                                                st.error(f"Preview failed: {apply_resp.status_code} - {apply_resp.text}")
-                                except Exception as e:
-                                    st.error(f"Error generating preview: {e}")
+                    if new_selected != st.session_state.selected_issue_ids:
+                        st.session_state.selected_issue_ids = new_selected
+                        st.rerun()
+                
+                st.markdown("---")
                     
-                        with col2:
-                            if st.session_state.get("cleaned_csv_base64"):
-                                import base64
-                                csv_base64 = st.session_state.get("cleaned_csv_base64")
-                                filename = st.session_state.get("cleaned_csv_filename", "cleaned.csv")
-                                csv_bytes = base64.b64decode(csv_base64)
-                                st.download_button(
-                                    label="📥 Download Cleaned CSV",
-                                    data=csv_bytes,
-                                    file_name=filename,
-                                    mime="text/csv",
-                                    key="download_cleaned_csv"
-                                )
+                # Action buttons: preview and apply fixes
+                st.markdown("### 🔧 Apply Fixes")
+                col1, col2, col3 = st.columns(3)
                     
-                        with col3:
-                            st.metric("Selected Issues", len(st.session_state.selected_issue_ids))
-                    
-                        # Show full CSV preview with green highlighting for changed values
-                        if st.session_state.get("cleaned_csv_base64"):
-                            st.markdown("### 📊 Preview: Cleaned CSV (Changed values highlighted in green)")
-                        
-                            # Show AI indicator
-                            st.info("🤖 **AI-Powered Fixes**: All corrections were made by AI agents based on your data patterns (not hardcoded).")
-                        
-                            import base64
-                            from io import StringIO
-                        
-                            # Decode cleaned CSV
-                            csv_base64 = st.session_state.get("cleaned_csv_base64")
-                            if csv_base64:
-                                try:
-                                    csv_bytes = base64.b64decode(csv_base64)
-                                    csv_string = csv_bytes.decode("utf-8")
-                                    df_preview = pd.read_csv(StringIO(csv_string))
-                                
-                                    # Get changed cells mapping
-                                    changed_cells = st.session_state.get("changed_cells", {})
-                                
-                                    # Create a DataFrame of styles
-                                    styles = pd.DataFrame('', index=df_preview.index, columns=df_preview.columns)
-                                    for key, change_info in changed_cells.items():
-                                        try:
-                                            # Handle both string keys and dict values
-                                            if isinstance(key, str) and '_' in key:
-                                                row_idx_str, col_name = key.split('_', 1)
-                                                row_idx = int(row_idx_str)
-                                                if row_idx < len(df_preview) and col_name in df_preview.columns:
-                                                    styles.at[row_idx, col_name] = 'background-color: #90EE90'
-                                        except (ValueError, KeyError, AttributeError) as e:
-                                            continue
-                                
-                                    # Apply styles
-                                    styled_df = df_preview.style.apply(lambda x: styles, axis=None)
-                                
-                                    # Display styled dataframe
-                                    st.dataframe(styled_df, use_container_width=True, height=400)
-                                
-                                    # Show legend
-                                    st.caption("🟢 Green cells indicate values that were changed/fixed by AI")
-                                except Exception as e:
-                                    st.error(f"Error displaying preview: {e}")
-                                    st.code(str(e))
+                with col1:
+                    if st.button("👁️ Preview Cleaned CSV", key="preview_fixes_btn"):
+                        try:
+                            # Only use selected issues
+                            selected_ids = list(st.session_state.selected_issue_ids)
+                            if not selected_ids:
+                                st.warning("⚠️ Please select at least one issue to fix by checking the checkboxes above.")
                             else:
-                                st.warning("Preview data not available")
-                    
-                        # Show applied fixes details if preview was generated
-                        if st.session_state.get("applied_details"):
-                            with st.expander("📋 View Applied Fixes Details"):
-                                applied_df = pd.DataFrame(st.session_state.get("applied_details", []))
-                                st.dataframe(applied_df, use_container_width=True, hide_index=True)
-                    
-                        # Option to save to S3 after preview
-                        if st.session_state.get("cleaned_csv_base64"):
-                            if st.button("💾 Save Cleaned CSV to S3", key="save_to_s3_btn"):
-                                try:
-                                    issue_ids = [i['id'] for i in filtered_issues if i.get('id')]
+                                # Filter to only selected issues
+                                selected_issues = [i for i in filtered_issues if i.get('id') in selected_ids]
+                                with st.spinner(f"Generating preview for {len(selected_ids)} selected issues..."):
                                     payload = {
-                                        "issue_ids": issue_ids,
-                                        "mode": "export",
+                                        "issue_ids": selected_ids,
+                                        "mode": "preview",
                                         # Provide issues + source directly (no stored validation JSON required)
-                                        "issues": filtered_issues,
+                                        "issues": selected_issues,
                                         "source_bucket": st.session_state.get("agentic_latest_source_bucket"),
                                         "source_key": st.session_state.get("agentic_latest_source_key"),
                                         "unit_preferences": st.session_state.get("unit_preferences", {}),
                                     }
-                                    with st.spinner("Saving to S3..."):
-                                        apply_resp = requests.post(
-                                            f"{BACKEND_URL}/api/agents/apply",
-                                            json=payload,
-                                            timeout=60,
-                                        )
-                                        if apply_resp.status_code == 200:
-                                            apply_data = apply_resp.json()
-                                            st.success(apply_data.get("message", "Cleaned CSV saved to S3"))
-                                            download_url = apply_data.get("download_url")
-                                            if download_url:
-                                                st.code(download_url, language="text")
+                                    apply_resp = requests.post(
+                                        f"{BACKEND_URL}/api/agents/apply",
+                                        json=payload,
+                                        timeout=60,
+                                    )
+                                    if apply_resp.status_code == 200:
+                                        apply_data = apply_resp.json()
+                                        preview_data = apply_data.get("preview_data", {})
+                                        csv_base64 = preview_data.get("csv_base64")
+                                        filename = preview_data.get("filename", "cleaned.csv")
+                                        applied_count = preview_data.get("applied_count", 0)
+                                    
+                                        if csv_base64:
+                                            st.success(f"✅ Preview ready: {applied_count} fixes applied by AI")
+                                            st.session_state.cleaned_csv_base64 = csv_base64
+                                            st.session_state.cleaned_csv_filename = filename
+                                            st.session_state.applied_details = preview_data.get("applied_details", [])
+                                            st.session_state.changed_cells = preview_data.get("changed_cells", {}) or {}
+                                            st.session_state.csv_original_base64 = preview_data.get("csv_original_base64")
+                                            st.rerun()  # Rerun to show preview
                                         else:
-                                            st.error(f"Save failed: {apply_resp.status_code} - {apply_resp.text}")
-                                except Exception as e:
-                                    st.error(f"Error saving to S3: {e}")
-                            else:
-                                st.info("No issues match the selected filters.")
+                                            st.error("Preview data not available. Check backend logs for errors.")
+                                    else:
+                                        st.error(f"Preview failed: {apply_resp.status_code} - {apply_resp.text}")
+                        except Exception as e:
+                            st.error(f"Error generating preview: {e}")
+                    
+                with col2:
+                    if st.session_state.get("cleaned_csv_base64"):
+                        import base64
+                        csv_base64 = st.session_state.get("cleaned_csv_base64")
+                        filename = st.session_state.get("cleaned_csv_filename", "cleaned.csv")
+                        csv_bytes = base64.b64decode(csv_base64)
+                        st.download_button(
+                            label="📥 Download Cleaned CSV",
+                            data=csv_bytes,
+                            file_name=filename,
+                            mime="text/csv",
+                            key="download_cleaned_csv"
+                        )
+                    
+                with col3:
+                    st.metric("Selected Issues", len(st.session_state.selected_issue_ids))
+                    
+                # Show full CSV preview with green highlighting for changed values
+                if st.session_state.get("cleaned_csv_base64"):
+                    st.markdown("### 📊 Preview: Cleaned CSV (Changed values highlighted in green)")
+                
+                    # Show AI indicator
+                    st.info("🤖 **AI-Powered Fixes**: All corrections were made by AI agents based on your data patterns (not hardcoded).")
+                
+                    import base64
+                    from io import StringIO
+                
+                    # Decode cleaned CSV
+                    csv_base64 = st.session_state.get("cleaned_csv_base64")
+                    if csv_base64:
+                        try:
+                            csv_bytes = base64.b64decode(csv_base64)
+                            csv_string = csv_bytes.decode("utf-8")
+                            df_preview = pd.read_csv(StringIO(csv_string))
+                        
+                            # Get changed cells mapping
+                            changed_cells = st.session_state.get("changed_cells", {})
+                        
+                            # Create a DataFrame of styles
+                            styles = pd.DataFrame('', index=df_preview.index, columns=df_preview.columns)
+                            for key, change_info in changed_cells.items():
+                                try:
+                                    # Handle both string keys and dict values
+                                    if isinstance(key, str) and '_' in key:
+                                        row_idx_str, col_name = key.split('_', 1)
+                                        row_idx = int(row_idx_str)
+                                        if row_idx < len(df_preview) and col_name in df_preview.columns:
+                                            styles.at[row_idx, col_name] = 'background-color: #90EE90'
+                                except (ValueError, KeyError, AttributeError) as e:
+                                    continue
+                        
+                            # Apply styles
+                            styled_df = df_preview.style.apply(lambda x: styles, axis=None)
+                        
+                            # Display styled dataframe
+                            st.dataframe(styled_df, use_container_width=True, height=400)
+                        
+                            # Show legend
+                            st.caption("🟢 Green cells indicate values that were changed/fixed by AI")
+                        except Exception as e:
+                            st.error(f"Error displaying preview: {e}")
+                            st.code(str(e))
                     else:
-                        st.info("Select one or more issue types from the matrix above to view details.")
+                        st.warning("Preview data not available")
+                    
+                # Show applied fixes details if preview was generated
+                if st.session_state.get("applied_details"):
+                    with st.expander("📋 View Applied Fixes Details"):
+                        applied_df = pd.DataFrame(st.session_state.get("applied_details", []))
+                        st.dataframe(applied_df, use_container_width=True, hide_index=True)
+                    
+                # Option to save to S3 after preview
+                if st.session_state.get("cleaned_csv_base64"):
+                    if st.button("💾 Save Cleaned CSV to S3", key="save_to_s3_btn"):
+                        try:
+                            issue_ids = [i['id'] for i in filtered_issues if i.get('id')]
+                            payload = {
+                                "issue_ids": issue_ids,
+                                "mode": "export",
+                                # Provide issues + source directly (no stored validation JSON required)
+                                "issues": filtered_issues,
+                                "source_bucket": st.session_state.get("agentic_latest_source_bucket"),
+                                "source_key": st.session_state.get("agentic_latest_source_key"),
+                                "unit_preferences": st.session_state.get("unit_preferences", {}),
+                            }
+                            with st.spinner("Saving to S3..."):
+                                apply_resp = requests.post(
+                                    f"{BACKEND_URL}/api/agents/apply",
+                                    json=payload,
+                                    timeout=60,
+                                )
+                                if apply_resp.status_code == 200:
+                                    apply_data = apply_resp.json()
+                                    st.success(apply_data.get("message", "Cleaned CSV saved to S3"))
+                                    download_url = apply_data.get("download_url")
+                                    if download_url:
+                                        st.code(download_url, language="text")
+                                else:
+                                    st.error(f"Save failed: {apply_resp.status_code} - {apply_resp.text}")
+                        except Exception as e:
+                            st.error(f"Error saving to S3: {e}")
+                    else:
+                                st.info("No issues match the selected filters.")
                 else:
                     st.info("No issues found for the selected filters.")
-            else:
-                st.info("No agentic issues found for this dataset.")
+        else:
+            st.info("No agentic issues found for this dataset.")
     except Exception as e:
         st.error(f"Error: {e}")
 else:

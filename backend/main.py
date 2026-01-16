@@ -6,6 +6,37 @@ import os
 # Add parent directory to path to find chatbot module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Load environment variables from .env file
+# Try to load from multiple locations: root .env, project .env, backend/.env
+from dotenv import load_dotenv
+import os
+from pathlib import Path
+
+# Try multiple .env file locations
+backend_dir = Path(__file__).parent
+project_root = backend_dir.parent
+root_env = Path('/Users/kunal.khedkar/Desktop/Hackethon_bot/.env')  # Absolute path to root .env
+project_env = project_root / '.env'
+backend_env = backend_dir / '.env'
+
+# Load .env files in priority order (first found wins, later ones don't override)
+env_loaded = False
+if root_env.exists():
+    load_dotenv(root_env)
+    print(f"✅ Loaded .env from root: {root_env}")
+    env_loaded = True
+if project_env.exists() and not env_loaded:
+    load_dotenv(project_env)
+    print(f"✅ Loaded .env from project: {project_env}")
+    env_loaded = True
+if backend_env.exists():
+    load_dotenv(backend_env, override=False)  # Don't override if already loaded
+    print(f"✅ Loaded .env from backend: {backend_env}")
+    env_loaded = True
+
+if not env_loaded:
+    print("⚠️ No .env file found in any location")
+
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -48,14 +79,19 @@ app.add_middleware(
 
 # Initialize chatbot with configurable LLM provider
 try:
-    # Set Gemini API key (premium model)
+    # Load Gemini API key from environment (from .env file or system env)
     gemini_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
     if gemini_key:
         os.environ['GOOGLE_API_KEY'] = gemini_key
         os.environ['GEMINI_API_KEY'] = gemini_key
+        print(f"✅ Gemini API key loaded from environment (length: {len(gemini_key)})")
+    else:
+        print("⚠️ Warning: GEMINI_API_KEY or GOOGLE_API_KEY not found in environment variables")
 
-    # Set LLM provider to Gemini
-    os.environ['LLM_PROVIDER'] = 'gemini'
+    # Set LLM provider to Gemini (can be overridden by LLM_PROVIDER env var)
+    llm_provider = os.getenv('LLM_PROVIDER', 'gemini').lower()
+    os.environ['LLM_PROVIDER'] = llm_provider
+    print(f"✅ LLM Provider set to: {llm_provider}")
     
     query_engine = LLMProviderFactory.create_query_engine()
     provider = LLMProviderFactory.get_provider()
@@ -907,6 +943,13 @@ async def get_agent_summary(
 async def apply_fixes(request: ApplyFixesRequest):
     """Apply agentic fixes (preview, export, or commit)"""
     try:
+        # DEBUG: Log first few issues to see what's being received
+        if request.issues:
+            print(f"DEBUG: apply_fixes - Received {len(request.issues)} issues from frontend")
+            for i, issue in enumerate(request.issues[:5]):
+                issue_dict = issue.model_dump() if hasattr(issue, 'model_dump') else issue
+                print(f"DEBUG: apply_fixes - Issue {i}: type={issue_dict.get('issue_type')}, row={issue_dict.get('row_id')}, col={issue_dict.get('column')}, suggested_value='{issue_dict.get('suggested_value')}'")
+        
         if not request.issue_ids:
             raise HTTPException(status_code=400, detail="No issue_ids provided")
 
@@ -1006,38 +1049,103 @@ async def apply_fixes(request: ApplyFixesRequest):
         # Track which cells changed (row_id, column) -> (old_value, new_value)
         changed_cells = {}
         
-        # First, standardize ALL values in columns with unit preferences (not just issues)
+        # First, standardize ALL values in columns with unit issues (not just flagged rows)
         from utils.data_cleaning import parse_units, convert_units
-        columns_to_standardize = set()
+        
+        # Find columns with unit issues and determine target unit for each
+        columns_to_standardize = {}  # {column_name: target_unit}
+        
         for issue in selected_issues:
             if issue.get("issue_type") == "ScaleMismatch":
                 col = issue.get("column")
-                if col and col in unit_preferences:
-                    columns_to_standardize.add(col)
+                suggested_value = issue.get("suggested_value")
+                
+                if col and suggested_value:
+                    # Extract target unit from suggested value (e.g., "180.00 cm" -> "cm")
+                    # Try to parse the suggested value to get the unit
+                    parsed = parse_units(str(suggested_value))
+                    if parsed:
+                        _, target_unit, _ = parsed
+                        if col not in columns_to_standardize:
+                            columns_to_standardize[col] = target_unit
+                            print(f"DEBUG: apply_fixes - Will standardize ALL values in column '{col}' to '{target_unit}'")
         
-        # Standardize all values in these columns to the preferred unit
-        for col in columns_to_standardize:
+        # Also check unit_preferences from request (if user explicitly selected a unit)
+        if unit_preferences:
+            for col, unit in unit_preferences.items():
+                if col not in columns_to_standardize:
+                    columns_to_standardize[col] = unit
+                    print(f"DEBUG: apply_fixes - Will standardize ALL values in column '{col}' to '{unit}' (from user preference)")
+        
+        # Standardize ALL values in these columns to the target unit
+        for col, target_unit in columns_to_standardize.items():
             if col not in df.columns:
                 continue
-            preferred_unit = unit_preferences[col]
+            
+            print(f"DEBUG: apply_fixes - Standardizing ALL rows in column '{col}' to unit '{target_unit}'")
+            converted_count = 0
             for idx in range(len(df)):
                 value = df.at[idx, col]
                 old_value = df_original.at[idx, col]
-                if value and isinstance(value, str) and value.strip():
-                    parsed = parse_units(str(value))
+                
+                if value and str(value).strip():
+                    value_str = str(value).strip()
+                    parsed = parse_units(value_str)
+                    
                     if parsed:
                         numeric_value, current_unit, _ = parsed
-                        if current_unit != preferred_unit:
-                            converted = convert_units(numeric_value, current_unit, preferred_unit)
+                        
+                        # ALWAYS reformat to target unit (even if already in target unit, for consistency)
+                        if current_unit == target_unit:
+                            # Already in target unit, just reformat for consistency
+                            new_value = f"{numeric_value:.2f} {target_unit}"
+                        else:
+                            # Convert from current unit to target unit
+                            converted = convert_units(numeric_value, current_unit, target_unit)
                             if converted is not None:
-                                new_value = f"{converted:.2f} {preferred_unit}"
+                                new_value = f"{converted:.2f} {target_unit}"
+                            else:
+                                continue  # Skip if conversion failed
+                        
+                        # Apply the standardized format
+                        if str(old_value).strip() != new_value.strip():
+                            df.at[idx, col] = new_value
+                            changed_cells[(idx, col)] = (str(old_value), new_value)
+                            converted_count += 1
+                            if converted_count <= 10:  # Only print first 10 to avoid log spam
+                                print(f"DEBUG: apply_fixes - Row {idx}, Column '{col}': '{old_value}' → '{new_value}'")
+                    
+                    elif value_str.replace('.', '').replace('-', '').replace(' ', '').isdigit():
+                        # Value is just a number with no unit - assume it's already in target unit
+                        try:
+                            numeric_value = float(value_str)
+                            new_value = f"{numeric_value:.2f} {target_unit}"
+                            if str(old_value).strip() != new_value.strip():
                                 df.at[idx, col] = new_value
-                                # Track this change
                                 changed_cells[(idx, col)] = (str(old_value), new_value)
+                                converted_count += 1
+                                if converted_count <= 10:
+                                    print(f"DEBUG: apply_fixes - Row {idx}, Column '{col}': '{old_value}' (no unit) → '{new_value}'")
+                        except ValueError:
+                            pass  # Skip if can't convert to float
+                    else:
+                        # Could not parse this value - log it for debugging
+                        if converted_count == 0 or idx % 10 == 0:  # Log occasionally
+                            print(f"⚠️ DEBUG: apply_fixes - Row {idx}, Column '{col}': Could not parse value '{value_str}' for unit conversion")
+            
+            print(f"DEBUG: apply_fixes - ✅ Standardized {converted_count} values in column '{col}' to '{target_unit}'")
+            
+            # CRITICAL: If we didn't standardize all values, log which ones failed
+            if converted_count < len(df):
+                missing_count = len(df) - converted_count
+                print(f"⚠️ WARNING: {missing_count} values in column '{col}' were not standardized - may need better parsing")
         
         # Apply fixes for other issue types (non-unit issues)
         applied = 0
         applied_details = []
+        # CRITICAL: Track which (row, column) pairs have been fixed to avoid duplicates
+        fixed_cells = set()
+        
         for issue in selected_issues:
             row_id = issue.get("row_id")
             column = issue.get("column")
@@ -1055,13 +1163,41 @@ async def apply_fixes(request: ApplyFixesRequest):
             # Skip unit issues - already handled above for entire column
             if issue_type == "ScaleMismatch":
                 continue
+            
+            # CRITICAL: Skip if this (row, column) was already fixed (avoid duplicates overwriting better fixes)
+            cell_key = (row_id, column)
+            if cell_key in fixed_cells:
+                print(f"⚠️ SKIPPING duplicate issue for Row {row_id}, Column '{column}', issue_type={issue_type} (already fixed)")
+                continue
+            
+            # Log what we're applying
+            print(f"DEBUG: apply_fixes - Applying {issue_type} fix: Row {row_id}, Column '{column}', suggested='{str(suggested_value)[:50]}'...")
+            
+            # CRITICAL: Never apply fixes to protected columns (names, cities)
+            col_lower = column.lower()
+            is_name_column = any(kw in col_lower for kw in ['firstname', 'first_name', 'lastname', 'last_name',
+                                               'fullname', 'full_name', 'username', 'user_name',
+                                               'name', 'person', 'customer', 'employee', 'contact'])
+            is_city_column = any(kw in col_lower for kw in ['city', 'town', 'location', 'place'])
+            
+            if is_name_column:
+                print(f"⚠️ SKIPPING {issue_type} fix for personal name column '{column}' at row {row_id}")
+                continue  # Skip ALL fixes to name columns
+            
+            if is_city_column:
+                print(f"⚠️ SKIPPING {issue_type} fix for city column '{column}' at row {row_id} (cities are never modified)")
+                continue  # NEVER modify city columns
 
             # Get current value before applying fix
             old_value = df.at[row_id, column]
             
-            # Handle None suggested_value (set to null/empty for impossible values)
-            if suggested_value is None:
-                df.at[row_id, column] = None  # Set to null
+            # Handle None/null suggested_value (set to null/empty for impossible values like temporal paradoxes)
+            # Check for Python None, string "None", string "null", or actual null
+            print(f"DEBUG: apply_fixes - Row {row_id}, Column {column}: suggested_value={suggested_value}, type={type(suggested_value)}")
+            
+            if suggested_value is None or str(suggested_value).lower() in ['none', 'null', '']:
+                print(f"DEBUG: apply_fixes - Setting {column} at row {row_id} to None (temporal paradox or impossible value)")
+                df.at[row_id, column] = None  # Set to null/empty
                 applied += 1
                 applied_details.append({
                     "row_id": row_id,
@@ -1070,6 +1206,7 @@ async def apply_fixes(request: ApplyFixesRequest):
                     "new_value": "null (impossible value)"
                 })
                 changed_cells[(row_id, column)] = (str(old_value), "null")
+                fixed_cells.add(cell_key)  # Mark as fixed
             elif suggested_value:  # Only apply if suggested_value is not empty
                 # Apply the fix
                 df.at[row_id, column] = suggested_value
@@ -1082,6 +1219,7 @@ async def apply_fixes(request: ApplyFixesRequest):
                 })
                 # Track this change
                 changed_cells[(row_id, column)] = (str(old_value), str(suggested_value))
+                fixed_cells.add(cell_key)  # Mark as fixed
         
         # Count unit standardizations
         unit_standardizations = 0
@@ -1175,25 +1313,80 @@ async def apply_fixes(request: ApplyFixesRequest):
 async def list_s3_files(bucket: str, prefix: str = ""):
     """List files in S3 bucket for file browser dropdown"""
     try:
-        from connectors.s3_connector import S3Connector
+        import boto3
+        from botocore.exceptions import ClientError, NoCredentialsError
         
-        # Create connector with minimal config
-        connector = S3Connector({
-            'bucket': bucket,
-            'key': 'dummy.csv',  # Required by constructor but not used for listing
-            'file_format': 'csv'
-        })
+        # Get AWS credentials from environment (check both AWS_REGION and AWS_DEFAULT_REGION)
+        aws_access_key = os.getenv('AWS_ACCESS_KEY_ID')
+        aws_secret_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+        aws_region = os.getenv('AWS_REGION') or os.getenv('AWS_DEFAULT_REGION') or 'us-east-1'
+        
+        print(f"DEBUG: S3 credentials check - Access Key: {'Set' if aws_access_key else 'Missing'}, Secret Key: {'Set' if aws_secret_key else 'Missing'}, Region: {aws_region}")
+        
+        # Check if credentials are available
+        if not aws_access_key or not aws_secret_key:
+            raise HTTPException(
+                status_code=400, 
+                detail="AWS credentials not configured. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in environment variables or .env file"
+            )
+        
+        # Create S3 client
+        try:
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=aws_access_key,
+                aws_secret_access_key=aws_secret_key,
+                region_name=aws_region
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to create S3 client: {str(e)}"
+            )
         
         # List files
-        files = connector.list_files(bucket=bucket, prefix=prefix)
-        
-        return {
-            "bucket": bucket,
-            "prefix": prefix,
-            "files": files,
-            "count": len(files)
-        }
+        try:
+            response = s3_client.list_objects_v2(
+                Bucket=bucket,
+                Prefix=prefix,
+                MaxKeys=1000
+            )
+            
+            files = []
+            if 'Contents' in response:
+                for obj in response['Contents']:
+                    # Skip directories (keys ending with /)
+                    if not obj['Key'].endswith('/'):
+                        files.append({
+                            'key': obj['Key'],
+                            'size': obj['Size'],
+                            'last_modified': obj['LastModified'].isoformat()
+                        })
+            
+            return {
+                "bucket": bucket,
+                "prefix": prefix,
+                "files": files,
+                "count": len(files)
+            }
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            error_message = e.response.get('Error', {}).get('Message', str(e))
+            raise HTTPException(
+                status_code=500,
+                detail=f"AWS S3 error ({error_code}): {error_message}"
+            )
+        except NoCredentialsError:
+            raise HTTPException(
+                status_code=401,
+                detail="AWS credentials not found. Please configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+            )
+    except HTTPException:
+        raise
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error listing S3 files: {error_details}")
         raise HTTPException(status_code=500, detail=f"Failed to list S3 files: {str(e)}")
 
 

@@ -10,8 +10,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Database URL from environment
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg2://dq_user:dq_password@localhost:5432/data_quality")
+# Database URL from environment (defaults to SQLite for easier setup)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dq_platform.db")
 
 # Create engine
 engine = create_engine(

@@ -108,9 +108,13 @@ def normalize_phone(phone_string: str, country_code: str = None, context: Option
     if not phone_string or not isinstance(phone_string, str):
         return None
     
-    # Auto-detect country if not provided
-    if not country_code:
+    # CRITICAL: If country_code is provided, NEVER auto-detect - use it directly
+    # Only auto-detect if country_code is explicitly None or empty
+    if not country_code or country_code.strip() == '':
         country_code = detect_phone_country(phone_string, context)
+        print(f"DEBUG: normalize_phone: No country_code provided, auto-detected: '{country_code}'")
+    else:
+        print(f"DEBUG: normalize_phone: Using provided country_code='{country_code}' (will NOT auto-detect)")
     
     # Remove all non-digit characters except +
     digits = re.sub(r'[^\d+]', '', phone_string)
@@ -214,7 +218,32 @@ def normalize_phone(phone_string: str, country_code: str = None, context: Option
                 print(f"DEBUG: normalize_phone: ✅ Generic format (fallback) for '{country_code_upper}': '{normalized}'")
                 return (normalized, 0.6)
     
+    # CRITICAL: If we reach here and country_code was provided, we should have already returned
+    # This fallback should ONLY be used if country_code was NOT provided
+    # If country_code was provided but we didn't format it, something went wrong - log it
+    if country_code and country_code.strip():
+        print(f"DEBUG: normalize_phone: ⚠️ WARNING - country_code='{country_code}' was provided but no format was applied!")
+        print(f"DEBUG: normalize_phone: raw_digits='{raw_digits}', len={len(raw_digits)}")
+        # Force format based on country_code even if pattern doesn't match perfectly
+        country_code_upper = country_code.upper().strip()
+        if country_code_upper == 'IN' and len(raw_digits) > 0:
+            # Force Indian format
+            phone_digits = raw_digits[-10:] if len(raw_digits) >= 10 else raw_digits.zfill(10)
+            normalized = f"+91 {phone_digits}"
+            print(f"DEBUG: normalize_phone: ✅ Forced Indian format: '{normalized}'")
+            return (normalized, 0.7)
+        elif country_code_upper == 'US' and len(raw_digits) > 0:
+            # Force US format
+            phone_digits = raw_digits[-10:] if len(raw_digits) >= 10 else raw_digits.zfill(10)
+            if len(phone_digits) == 10:
+                normalized = f"+1 ({phone_digits[0:3]}) {phone_digits[3:6]}-{phone_digits[6:10]}"
+            else:
+                normalized = f"+1 {phone_digits}"
+            print(f"DEBUG: normalize_phone: ✅ Forced US format: '{normalized}'")
+            return (normalized, 0.7)
+    
     # Generic international format - but don't apply US formatting to other countries
+    # This is ONLY a fallback when country_code was NOT provided
     if digits.startswith('+'):
         # For Indian numbers that weren't caught above, try again
         if digits.startswith('+91'):
@@ -225,11 +254,11 @@ def normalize_phone(phone_string: str, country_code: str = None, context: Option
         # For other countries, keep simple format (don't apply US-style brackets)
         # Just ensure + prefix and proper spacing
         if len(digits) > 4:
-            country_code = digits[1:3] if len(digits) >= 3 else digits[1:2]
+            detected_country_code = digits[1:3] if len(digits) >= 3 else digits[1:2]
             rest = digits[3:] if len(digits) > 3 else digits[2:]
             # Simple format: +XX XXXXXXXXX (no brackets for non-US)
             if len(rest) >= 7:
-                normalized = f"+{country_code} {rest}"
+                normalized = f"+{detected_country_code} {rest}"
                 return (normalized, 0.7)
         return (digits, 0.7)
     
@@ -249,24 +278,48 @@ def parse_units(value_string: str) -> Optional[Tuple[float, str, float]]:
     if not value_string or not isinstance(value_string, str):
         return None
     
-    # Common unit patterns
+    # Common unit patterns (order matters - more specific patterns first)
     patterns = [
-        (r'(\d+\.?\d*)\s*ft\s*(\d+\.?\d*)\s*in', 'ft_in'),  # feet and inches
-        (r'(\d+\.?\d*)\s*cm', 'cm'),
-        (r'(\d+\.?\d*)\s*meters?', 'm'),
-        (r'(\d+\.?\d*)\s*inches?', 'in'),
-        (r'(\d+\.?\d*)\s*feet?', 'ft'),
+        # Feet and inches formats (compound units) - HIGHEST PRIORITY
+        (r'(\d+\.?\d*)\s*ft\s*(\d+\.?\d*)\s*in(?:\b|$)', 'ft_in'),  # 5ft 10in
+        (r'(\d+\.?\d*)[\'\u2019]\s*(\d+\.?\d*)[\"\u201d]', 'ft_in'),  # 5'10" or 5'10"
+        (r'(\d+\.?\d*)[\'\u2019]\s*(\d+\.?\d*)(?:\b|$)', 'ft_in'),  # 5'10 (apostrophe without inches mark)
+        (r'(\d+\.?\d*)\s*feet\s*(\d+\.?\d*)\s*inches?(?:\b|$)', 'ft_in'),  # 5 feet 10 inches
+        
+        # CRITICAL: Two numbers separated by space (height in feet inches without units)
+        # Must be 4-7 range for feet (realistic height) and 0-11 for inches
+        (r'^(\d)\s+(\d{1,2})$', 'ft_in_implied'),  # "5 8" -> 5 feet 8 inches
+        (r'^(\d)\s+(\d{1,2})\s*$', 'ft_in_implied'),  # "5 8 " with trailing space
+        
+        # Full word units (meters, inches, feet - must come before abbreviations)
+        (r'(\d+\.?\d*)\s*meters?(?:\b|$)', 'm'),  # 1.78 meters or 1.78meters
+        (r'(\d+\.?\d*)\s*inches?(?:\b|$)', 'in'),  # 70 inches or 70inches
+        (r'(\d+\.?\d*)\s*feet(?:\b|$)', 'ft'),  # 5 feet or 5feet
+        
+        # Abbreviations (cm, m, in, ft - more flexible matching)
+        (r'(\d+\.?\d*)\s*cm(?:\b|$|\s)', 'cm'),  # 178cm or 178 cm
+        (r'(\d+\.?\d*)\s*m(?:\b|$|\s)', 'm'),  # 1.78m or 1.78 m
+        (r'(\d+\.?\d*)\s*in(?:\b|$|\s)', 'in'),  # 70in or 70 in
+        (r'(\d+\.?\d*)\s*ft(?:\b|$|\s)', 'ft'),  # 5ft or 5 ft
     ]
     
     for pattern, unit_type in patterns:
         match = re.search(pattern, value_string, re.IGNORECASE)
         if match:
-            if unit_type == 'ft_in':
+            if unit_type == 'ft_in' or unit_type == 'ft_in_implied':
+                # Both explicit (5ft 10in) and implied (5 8) formats
                 feet = float(match.group(1))
                 inches = float(match.group(2))
-                total_inches = feet * 12 + inches
-                cm = total_inches * 2.54
-                return (cm, 'cm', 0.9)
+                
+                # Validate: feet should be 3-8 (realistic height), inches should be 0-11
+                if 3 <= feet <= 8 and 0 <= inches <= 11:
+                    total_inches = feet * 12 + inches
+                    cm = total_inches * 2.54
+                    confidence = 0.9 if unit_type == 'ft_in' else 0.75  # Lower confidence for implied
+                    return (cm, 'cm', confidence)
+                else:
+                    # Invalid feet/inches values, skip this match
+                    continue
             else:
                 value = float(match.group(1))
                 return (value, unit_type, 0.85)

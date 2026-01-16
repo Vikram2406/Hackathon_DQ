@@ -204,14 +204,33 @@ def run_validation(config: Dict[str, Any]) -> Dict[str, Any]:
         # Initialize orchestrator with LLM client if available
         llm_client = None
         try:
-            # Set Gemini API key (premium model)
+            # Load environment variables from .env file if not already loaded
+            from dotenv import load_dotenv
+            from pathlib import Path
+            
+            # Try to load from root .env first, then backend/.env
+            project_root = Path(__file__).parent.parent.parent
+            root_env = project_root / '.env'
+            backend_env = Path(__file__).parent.parent / '.env'
+            
+            if root_env.exists():
+                load_dotenv(root_env)
+            if backend_env.exists():
+                load_dotenv(backend_env, override=False)
+            
+            # Load Gemini API key from environment (from .env file or system env)
             gemini_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
             if gemini_key:
                 os.environ['GOOGLE_API_KEY'] = gemini_key
                 os.environ['GEMINI_API_KEY'] = gemini_key
+                print(f"✅ ValidationService: Gemini API key loaded from environment")
+            else:
+                print("⚠️ ValidationService: Warning - GEMINI_API_KEY or GOOGLE_API_KEY not found")
             
-            # Set LLM provider to Gemini
-            os.environ['LLM_PROVIDER'] = 'gemini'
+            # Set LLM provider (can be overridden by LLM_PROVIDER env var)
+            llm_provider = os.getenv('LLM_PROVIDER', 'gemini').lower()
+            os.environ['LLM_PROVIDER'] = llm_provider
+            print(f"✅ ValidationService: LLM Provider set to: {llm_provider}")
             
             # Create LLM client using factory
             llm_client = LLMProviderFactory.create_llm_client()

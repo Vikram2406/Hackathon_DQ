@@ -38,11 +38,21 @@ class SemanticAgent(BaseAgent):
             return issues
         
         # Detect entity columns (company names, organization names, etc.)
+        # CRITICAL: DO NOT include 'name' - personal names should NOT be modified!
         entity_columns = []
         for col in dataset_rows[0].keys():
             col_lower = col.lower()
-            if any(kw in col_lower for kw in ['company', 'organization', 'org', 'entity', 'name', 'brand']):
+            
+            # Exclude personal name columns
+            if any(kw in col_lower for kw in ['firstname', 'first_name', 'lastname', 'last_name', 
+                                               'fullname', 'full_name', 'username', 'user_name',
+                                               'person', 'customer', 'employee', 'contact']):
+                continue  # Skip personal name columns
+            
+            # Only detect actual entity columns (companies, organizations, brands)
+            if any(kw in col_lower for kw in ['company', 'organization', 'org', 'entity', 'brand', 'vendor', 'supplier']):
                 entity_columns.append(col)
+                print(f"DEBUG: SemanticAgent - Detected entity column: '{col}'")
         
         # Group similar entities
         for col in entity_columns:
