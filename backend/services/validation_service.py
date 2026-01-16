@@ -16,6 +16,7 @@ from dq_engine.checks.freshness_check import check_freshness
 from dq_engine.checks.volume_check import check_volume
 from dq_engine.storage import StorageFactory
 from datetime import datetime
+import pandas as pd
 
 
 def run_validation(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -35,14 +36,18 @@ def run_validation(config: Dict[str, Any]) -> Dict[str, Any]:
     if source_type != 's3':
         raise ValueError(f"Source type {source_type} not yet implemented")
     
-    # Load data from S3
+    # Load data from S3 (optionally with row limit to keep validation fast)
     connector = S3Connector(connection_details)
     connector.connect()
     
     if not connector.test_connection():
         raise Exception("Failed to connect to S3")
     
-    df = connector.read_data()
+    # Allow max_rows in config to limit how many rows we read (for very large files)
+    max_rows = config.get('max_rows', 10000)  # Default to 10k if not specified
+    print(f"DEBUG: Reading up to {max_rows} rows from S3...")
+    df = connector.read_data(limit=max_rows)
+    print(f"DEBUG: Loaded {len(df)} rows from S3")
     
     # Get quality checks to run
     quality_checks = config.get('quality_checks', ['null_check', 'duplicate_check', 'freshness_check', 'volume_check'])
@@ -61,7 +66,8 @@ def run_validation(config: Dict[str, Any]) -> Dict[str, Any]:
     if 'null_check' in quality_checks:
         try:
             print("DEBUG: Running null_check...")
-            columns = config.get('required_columns', list(df.columns))
+            # Use required_columns if provided and non-empty, otherwise use all columns
+            columns = config.get('required_columns') or list(df.columns)
             results['null_check'] = check_nulls(df, columns=columns)
             print(f"DEBUG: null_check completed - status: {results['null_check']['status']}")
         except Exception as e:
@@ -119,15 +125,30 @@ def run_validation(config: Dict[str, Any]) -> Dict[str, Any]:
             print("DEBUG: Running volume_check...")
             results['volume_check'] = check_volume(
                 current_count=current_count,
-                historical_counts=[],
+                historical_counts=[],  # No historical data yet
                 threshold_pct=20
             )
             print(f"DEBUG: volume_check completed - status: {results['volume_check']['status']}")
+        except ZeroDivisionError as e:
+            # Gracefully handle any division-by-zero inside volume logic
+            print(f"WARNING in volume_check (division by zero): {e}")
+            results['volume_check'] = {
+                'check_type': 'volume_check',
+                'status': 'WARNING',
+                'message': 'Volume check unavailable due to insufficient historical data',
+                'current_count': current_count
+            }
         except Exception as e:
             print(f"ERROR in volume_check: {e}")
             import traceback
             traceback.print_exc()
-            raise
+            # Fallback to a warning instead of failing entire validation
+            results['volume_check'] = {
+                'check_type': 'volume_check',
+                'status': 'WARNING',
+                'message': f'Volume check error: {e}',
+                'current_count': current_count
+            }
     
     
     print(f"DEBUG: Completed checks. Results keys: {list(results.keys())}")  # DEBUG
@@ -173,11 +194,94 @@ def run_validation(config: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     
-    # Save using storage backend
-    storage = StorageFactory.get_storage(source_type)
-    success = storage.save_results(result_data, source_id)
+    # Run agentic data quality agents
+    try:
+        from agents.orchestrator import AgentsOrchestrator
+        from agents.llm_provider import LLMProviderFactory, LLMProvider
+        from config import settings
+        import os
+        
+        # Initialize orchestrator with LLM client if available
+        llm_client = None
+        try:
+            # Set Gemini API key (premium model)
+            gemini_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
+            if gemini_key:
+                os.environ['GOOGLE_API_KEY'] = gemini_key
+                os.environ['GEMINI_API_KEY'] = gemini_key
+            
+            # Set LLM provider to Gemini
+            os.environ['LLM_PROVIDER'] = 'gemini'
+            
+            # Create LLM client using factory
+            llm_client = LLMProviderFactory.create_llm_client()
+            provider = LLMProviderFactory.get_provider()
+            print(f"✅ Initialized {provider.value.upper()} LLM client for agents")
+        except Exception as e:
+            error_str = str(e)
+            if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str or 'quota' in error_str.lower():
+                print(f"❌ LLM API quota exhausted! Cannot initialize LLM client for agents.")
+            else:
+                print(f"⚠️ Could not initialize LLM client for agents: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        orchestrator = AgentsOrchestrator(llm_client=llm_client)
+        
+        # Convert DataFrame to list of dicts for agents (sample if too large)
+        sample_size = 1000
+        if len(df) > sample_size:
+            df_sample = df.head(sample_size)
+            dataset_rows = df_sample.to_dict('records')
+        else:
+            dataset_rows = df.to_dict('records')
+        
+        # Run agents with progress indication
+        print(f"🔄 Running agentic data quality agents on {len(dataset_rows)} rows...")
+        print(f"   This may take 30-120 seconds depending on data size and API availability.")
+        agentic_results = orchestrator.run(
+            validation_result=result_data,
+            dataset_rows=dataset_rows,
+            sample_size=sample_size
+        )
+        
+        agentic_issues = agentic_results.get('agentic_issues', [])
+        agentic_summary = agentic_results.get('agentic_summary', {})
+        
+        print(f"✅ Agentic agents completed: {len(agentic_issues)} issues found")
+        
+        # Debug: Print issue categories
+        if agentic_issues:
+            categories = {}
+            for issue in agentic_issues:
+                cat = issue.get('category', 'Unknown')
+                categories[cat] = categories.get(cat, 0) + 1
+            print(f"DEBUG: Issue categories: {categories}")
+        
+        # Attach agentic results to result_data
+        result_data['agentic_issues'] = agentic_issues
+        result_data['agentic_summary'] = agentic_summary
+        
+        print(f"DEBUG: Saved {len(agentic_issues)} issues to result_data")
+        print(f"DEBUG: Result_data keys: {list(result_data.keys())}")
+        print(f"DEBUG: Result_data['dataset']: {result_data.get('dataset', 'N/A')}")
+    except Exception as e:
+        print(f"⚠️ Error running agentic agents: {e}")
+        import traceback
+        traceback.print_exc()
+        # Continue without agentic results
+        result_data['agentic_issues'] = []
+        result_data['agentic_summary'] = {}
     
-    if not success:
-        raise Exception("Failed to save validation results")
+    # Persisting results is optional.
+    # By default we do NOT store validation JSON history; we only generate issues live.
+    persist_results = config.get("persist_results", False)
+    if persist_results:
+        storage = StorageFactory.get_storage(source_type)
+        success = storage.save_results(result_data, source_id)
+        if not success:
+            raise Exception("Failed to save validation results")
+    else:
+        print("DEBUG: persist_results=False; skipping save_results (no validation history stored)")
     
     return result_data

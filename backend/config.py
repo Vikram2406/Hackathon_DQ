@@ -19,8 +19,15 @@ class Settings(BaseSettings):
     airflow_username: str = "admin"
     airflow_password: str = "admin"
     
+    # LLM Provider Configuration
+    llm_provider: str = "openai"  # "openai" or "gemini"
+    
     # OpenAI
     openai_api_key: str = ""
+    
+    # Google Gemini
+    google_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
     
     # AWS
     aws_access_key_id: Optional[str] = None

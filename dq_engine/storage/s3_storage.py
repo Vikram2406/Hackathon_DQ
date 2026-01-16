@@ -36,6 +36,17 @@ class S3Storage(BaseStorage):
                 'metadata': metadata or {}
             }
             
+            # Debug: Log what's being saved
+            print(f"DEBUG: S3Storage.save_results: Saving to source_id='{source_id}'")
+            print(f"DEBUG: S3Storage.save_results: Dataset='{full_results.get('dataset', 'N/A')}'")
+            print(f"DEBUG: S3Storage.save_results: Agentic issues count={len(full_results.get('agentic_issues', []))}")
+            if full_results.get('agentic_issues'):
+                categories = {}
+                for issue in full_results['agentic_issues']:
+                    cat = issue.get('category', 'N/A')
+                    categories[cat] = categories.get(cat, 0) + 1
+                print(f"DEBUG: S3Storage.save_results: Issue categories being saved: {categories}")
+            
             # Save timestamped version
             timestamped_key = f"{self.results_prefix}{source_id}/{timestamp}_validation.json"
             self.s3_client.put_object(
@@ -44,6 +55,7 @@ class S3Storage(BaseStorage):
                 Body=json.dumps(full_results, indent=2),
                 ContentType='application/json'
             )
+            print(f"DEBUG: S3Storage.save_results: Saved timestamped to {timestamped_key}")
             
             # Save latest version
             latest_key = f"{self.results_prefix}{source_id}/latest.json"
@@ -53,10 +65,14 @@ class S3Storage(BaseStorage):
                 Body=json.dumps(full_results, indent=2),
                 ContentType='application/json'
             )
+            print(f"DEBUG: S3Storage.save_results: Saved latest to {latest_key}")
+            print(f"DEBUG: S3Storage.save_results: ✅ Results saved successfully")
             
             return True
         except Exception as e:
             print(f"Error saving to S3: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def get_latest(self, source_id: str) -> Optional[Dict]:
