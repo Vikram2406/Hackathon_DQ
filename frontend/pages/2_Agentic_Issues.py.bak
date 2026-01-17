@@ -49,12 +49,11 @@ DEFAULT_S3_BUCKET = os.getenv("DQ_SOURCE_BUCKET", os.getenv("DQ_RESULTS_BUCKET",
 
 st.set_page_config(page_title="Agentic Issues", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
-# 🎨 MODERN DARK THEME WITH ANIMATIONS
-st.markdown("""
-<style>
-    /* Dark Theme Base */
-    .stApp {
-        background: linear-gradient(135deg, #0f0f1e 0%, #1a1a2e 50%, #16213e 100%);
+# Simple black and white theme - standard Streamlit styling
+st.title("🤖 Agentic DQ Platform")
+st.markdown("AI-Powered Smart Data Fixes • Real-time Issue Detection • Zero Code Required")
+
+# Store the latest validation results locally (no history / no caching)
         color: #e0e0e0;
     }
     
@@ -705,16 +704,6 @@ st.markdown("""
         animation: bounce 1s ease-in-out infinite;
     }
     
-    @keyframes bounce {
-        0%, 100% { transform: translateY(0); }
-        50% { transform: translateY(-5px); }
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Animated Title
-st.markdown('<h1 class="main-title">🤖 AGENTIC DQ PLATFORM</h1>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">✨ AI-Powered Smart Data Fixes • Real-time Issue Detection • Zero Code Required ✨</p>', unsafe_allow_html=True)
 
 # Store the latest validation results locally (no history / no caching)
 if "agentic_latest_results" not in st.session_state:
